@@ -1,0 +1,25 @@
+[package]
+name = "vdkio"
+version = "0.1.0"
+edition = "2021"
+description = "Video Development Kit - A set of libraries for building streaming services"
+authors = ["Rust VDK Contributors"]
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full", "test-util", "macros", "rt-multi-thread"] }
+bytes = "1"
+futures = "0.3"
+thiserror = "2.0.11"
+async-trait = "0.1"
+parking_lot = "0.12"
+bitvec = "1"
+log = "0.4" # Added log dependency
+base64 = "0.22.1"
+url = "2.4"
+md-5 = "0.10.6"
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1.0"
+
