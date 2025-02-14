@@ -6,11 +6,13 @@ A toolkit for building video streaming applications in Rust. The VDK provides a 
 
 - Video codec support:
   - H.264/AVC parsing and frame extraction
+  - H.265/HEVC parsing and frame extraction 
   - AAC audio parsing and frame extraction
 
 - Streaming protocols:
   - RTSP client implementation with SDP parsing
-  - More protocols coming soon...
+  - RTP packet handling and media transport
+  - RTCP feedback and statistics
 
 ## Usage
 
@@ -21,7 +23,7 @@ Add this to your `Cargo.toml`:
 vdkio = "0.1.0"
 ```
 
-### Quick Start
+## Quick Start
 
 ```rust
 use vdkio::prelude::*;
@@ -37,7 +39,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sdp = client.describe().await?;
     
     // Set up video stream if available
-    if let Some(_video) = sdp.get_media("video") {
+    if let Some(video) = sdp.get_media("video") {
         client.setup("video").await?;
     }
     
@@ -48,31 +50,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-### Using the H.264 Parser
+## H.264 Parser Example
 
 ```rust
 use vdkio::prelude::*;
+use std::error::Error;
 
-fn parse_h264_frame(data: &[u8]) {
+fn parse_h264_frame(data: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut parser = H264Parser::new();
-    let nalu = parser.parse_nalu(data).unwrap();
+    let nalu = parser.parse_nalu(data)?;
     
     if nalu.is_keyframe() {
         println!("Found keyframe!");
     }
+
+    Ok(())
 }
 ```
 
-### Using the AAC Parser
+## AAC Parser Example
 
 ```rust
 use vdkio::prelude::*;
+use std::error::Error;
 
-fn parse_aac_frame(data: &[u8]) {
+fn parse_aac_frame(data: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut parser = AACParser::new();
-    let frame = parser.parse_frame(data).unwrap();
+    let frame = parser.parse_frame(data)?;
     
     println!("Parsed AAC frame with {} channels", frame.config.channel_configuration);
+
+    Ok(())
 }
 ```
 
@@ -82,4 +90,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
