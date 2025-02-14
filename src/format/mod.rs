@@ -1,6 +1,8 @@
 use crate::av::{Packet, CodecData};
 use crate::Result;
 
+pub mod rtp;
+pub mod rtcp;
 pub mod rtsp;
 
 /// Common trait for format demuxers
@@ -28,3 +30,45 @@ pub trait Muxer: Send {
     /// Flush any buffered packets
     async fn flush(&mut self) -> Result<()>;
 }
+
+pub mod tests {
+    use super::*;
+    
+    /// A test muxer implementation
+    #[derive(Debug)]
+    pub struct TestMuxer {
+        pub packets: Vec<Packet>,
+    }
+
+    impl TestMuxer {
+        pub fn new() -> Self {
+            Self {
+                packets: Vec::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Muxer for TestMuxer {
+        async fn write_header(&mut self, _streams: &[Box<dyn CodecData>]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+            self.packets.push(packet.clone());
+            Ok(())
+        }
+
+        async fn write_trailer(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+}
+
+pub use self::rtp::{RTPPacket, JitterBuffer};
+pub use self::rtcp::{RTCPPacket, ReceptionReport};
+pub use self::rtsp::{RTSPClient, MediaDescription, TransportInfo, CastType};
