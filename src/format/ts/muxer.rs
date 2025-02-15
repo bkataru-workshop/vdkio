@@ -29,9 +29,9 @@ pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
 
 impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
     pub fn new(writer: W) -> Self {
-        parser: TSPacketParser::new(),
-            stream_writer: tokio::io::BufWriter::new(writer),
+        Self {
             parser: TSPacketParser::new(),
+            stream_writer: tokio::io::BufWriter::new(writer),
             streams: Vec::new(),
             continuity_counters: Vec::new(),
             current_pcr: Duration::ZERO,
@@ -298,21 +298,140 @@ impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
         self.stream_discontinuity = false;
 
         Ok(())
-            // PCR regression detected, mark discontinuity
-                    self.mark_discontinuity();
-                }
-            }
-            self.current_pcr = time;
-        }
     }
 
-    fn needs_pcr(&self) -> bool {
-        self.current_pcr >= self.last_pcr_write + PCR_INTERVAL
+    async fn write_packet(&mut self, packet: Packet) -> Result<()> {
+        let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
+
+        // Update PCR
+        if let Some(pts) = packet.pts {
+            self.update_pcr(Some(Duration::from_millis(pts as u64)));
+        }
+
+        let need_pcr = self.needs_pcr() && packet.stream_index == 0;
+        let is_pcr_pid = self.get_stream_pid(packet.stream_index) == self.pmt.pcr_pid;
+
+        // Calculate adaptation field size
+        let mut adaptation_size = if need_pcr && is_pcr_pid { 8 } else { 0 };
+        if self.stream_discontinuity {
+            adaptation_size += 1;
+        }
+
+        let payload_size = packet.data.len();
+        let header_size = 4; // Base TS header size
+        let stuffing_needed = if payload_size + header_size + adaptation_size < TS_PACKET_SIZE {
+            TS_PACKET_SIZE - (payload_size + header_size + adaptation_size)
+        } else {
+            0
+        };
+
+        // TS Header
+        let header = TSHeader {
+            sync_byte: 0x47,
+            transport_error: false,
+            payload_unit_start: true,
+            transport_priority: false,
+            pid: self.get_stream_pid(packet.stream_index),
+            scrambling_control: 0,
+            adaptation_field_exists: need_pcr || stuffing_needed > 0 || self.stream_discontinuity,
+            contains_payload: true,
+            continuity_counter: self.get_next_continuity_counter(packet.stream_index),
+        };
+        header.write_to(&mut buf)?;
+
+        // Write adaptation field if needed
+        if header.adaptation_field_exists {
+            self.write_adaptation_field(&mut buf, need_pcr && is_pcr_pid, stuffing_needed)?;
+            if need_pcr {
+                self.last_pcr_write = self.current_pcr;
+            }
+        }
+
+        // Write packet data
+        buf.extend_from_slice(&packet.data);
+
+        // Fill remainder with stuffing bytes if needed
+        while buf.len() < TS_PACKET_SIZE {
+            buf.put_u8(0xFF);
+        }
+
+        self.writer.write_all(&buf).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    async fn write_trailer(&mut self) -> Result<()> {
+        self.writer.flush().await?;
+        Ok(())
     }
 }
 
-#[async_trait]
-impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use tokio::runtime::Runtime;
+
+    struct TestCodec;
+    impl CodecData for TestCodec {
+        fn codec_type(&self) -> crate::av::CodecType {
+            crate::av::CodecType::H264
+        }
+        fn width(&self) -> Option<u32> {
+            None
+        }
+        fn height(&self) -> Option<u32> {
+            None
+        }
+        fn extra_data(&self) -> Option<&[u8]> {
+            None
+        }
+    }
+
+    #[test]
+    fn test_ts_muxer_basic() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let data = Vec::new();
+            let mut muxer = TSMuxer::new(Cursor::new(data));
+
+            // Add a stream
+            muxer.add_stream(Box::new(TestCodec)).await.unwrap();
+            let streams = vec![Box::new(TestCodec) as Box<dyn CodecData>];
+            muxer.write_header(&streams).await.unwrap();
+
+            // Create test packet
+            let mut packet = Packet::new(vec![0; 184]);
+            packet.stream_index = 0;
+            packet.pts = Some(0);
+            packet.dts = Some(0);
+            muxer.write_packet(packet).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn test_ts_muxer_pcr_discontinuity() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let data = Vec::new();
+            let mut muxer = TSMuxer::new(Cursor::new(data));
+            muxer.add_stream(Box::new(TestCodec)).await.unwrap();
+
+            let streams = vec![Box::new(TestCodec) as Box<dyn CodecData>];
+            muxer.write_header(&streams).await.unwrap();
+
+            // Write packet with normal PCR
+            let mut packet = Packet::new(vec![0; 184]);
+            packet.stream_index = 0;
+            packet.pts = Some(1000);
+            muxer.write_packet(packet.clone()).await.unwrap();
+
+            // Write packet with regressed PCR (should trigger discontinuity)
+            packet.pts = Some(500);
+            muxer.write_packet(packet).await.unwrap();
+        });
+    }
+}
     async fn write_header(&mut self, _streams: &[Box<dyn CodecData>]) -> Result<()> {
         // Add single program to PAT
         self.pat.entries.clear();
