@@ -13,9 +13,8 @@ use crate::utils::crc::Crc32Mpeg2;
 const PCR_INTERVAL: Duration = Duration::from_millis(40); // ~25 PCR updates per second
 
 pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
-    parwer: TSPackerPaistr,
-    streer: tokio::io::BufWriter<W>,
     parser: TSPacketParser,
+    stream_writer: tokio::io::BufWriter<W>,
     streams: Vec<Box<dyn CodecData>>,
     continuity_counters: Vec<u8>,
     current_pcr: Duration,
@@ -30,9 +29,8 @@ pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
 
 impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
     pub fn new(writer: W) -> Self {
-        Selfpar er: TSPacke{Pasr::new(),
-            stre
-            writer: tokio::io::BufWriter::new(writer),
+        parser: TSPacketParser::new(),
+            stream_writer: tokio::io::BufWriter::new(writer),
             parser: TSPacketParser::new(),
             streams: Vec::new(),
             continuity_counters: Vec::new(),
@@ -261,7 +259,10 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
 
     fn update_pcr(&mut self, packet_time: Option<Duration>) {
         if let Some(time) = packet_time {
-            if let Some(last_pcr) = self.la();
+            if let Some(last_pcr) = self.last_pcr {
+                if time < last_pcr {
+                    // PCR regression detected, mark discontinuity
+                    self.mark_discontinuity();
                 }
             }
             self.current_pcr = time;
@@ -276,15 +277,15 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
 impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
     async fn write_header(&mut self, _streams: &[Box<dyn CodecData>]) -> Result<()> {
         // Add single program to PAT
-        self.pat.entries.clearst_
+        self.pat.entries.clear();
         self.pat.entries.push(PATEntry {
-            program_number: 1,pcr {
+            program_number: 1,
             network_pid: 0,
             program_map_pid: PID_PMT,
-        i);
+        });
 
         // Set PCR PID to the first stream's PID
-        if !self.streams.is_empty() {f time < last_pcr {
+        if !self.streams.is_empty() {
             self.pmt.pcr_pid = self.get_stream_pid(0);
         }
 
