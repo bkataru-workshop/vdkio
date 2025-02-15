@@ -1,6 +1,6 @@
 use std::time::Duration;
 use crate::av::{CodecData, CodecType, Packet};
-use crate::error::Result;
+use crate::error::{Result, VdkError};
 use async_trait::async_trait;
 use std::sync::Arc;
 use bytes::Bytes;

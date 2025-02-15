@@ -1,12 +1,14 @@
 use tokio::io::AsyncWrite;
 use crate::av::{Packet, CodecData};
 use crate::error::{Result, VdkError};
+use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use std::time::Duration;
 use super::types::*;
 use super::parser::TSPacketParser;
 use super::hls::HLSSegmenter;
 use crate::utils::crc::Crc32Mpeg2;
+use crate::format::Muxer;
 
 const PCR_INTERVAL: Duration = Duration::from_millis(40); // ~25 PCR updates per second
 

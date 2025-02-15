@@ -1,5 +1,4 @@
 use crate::error::{Result, VdkError};
-use bytes::Bytes;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NALType {
