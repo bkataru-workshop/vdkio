@@ -1,11 +1,9 @@
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-use crate::av::{Packet, CodecData, Muxer};
+use tokio::io::AsyncWrite;
+use crate::av::{Packet, CodecData};
 use crate::error::{Result, VdkError};
-use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use std::time::Duration;
 use super::types::*;
-use super::parser::TSPacketParser;
 use super::parser::TSPacketParser;
 use super::hls::HLSSegmenter;
 use crate::utils::crc::Crc32Mpeg2;
@@ -182,8 +180,8 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
             buf.put_u8(0xFF);
         }
 
-        self.writer.write_all(&buf).await?;
-        self.writer.flush().await?;
+        self.stream_writer.write_all(&buf).await?;
+        self.stream_writer.flush().await?;
         Ok(())
     }
 
@@ -242,8 +240,8 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
             buf.put_u8(0xFF);
         }
 
-        self.writer.write_all(&buf).await?;
-        self.writer.flush().await?;
+        self.stream_writer.write_all(&buf).await?;
+        self.stream_writer.flush().await?;
         Ok(())
     }
 
@@ -272,6 +270,7 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
     fn needs_pcr(&self) -> bool {
         self.current_pcr >= self.last_pcr_write + PCR_INTERVAL
     }
+}
 
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
@@ -355,175 +354,17 @@ impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
             buf.put_u8(0xFF);
         }
 
-        self.writer.write_all(&buf).await?;
-        self.writer.flush().await?;
+        self.stream_writer.write_all(&buf).await?;
+        self.stream_writer.flush().await?;
         Ok(())
     }
 
     async fn write_trailer(&mut self) -> Result<()> {
-        self.writer.flush().await?;
+        self.stream_writer.flush().await?;
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-    use tokio::runtime::Runtime;
-
-    struct TestCodec;
-    impl CodecData for TestCodec {
-        fn codec_type(&self) -> crate::av::CodecType {
-            crate::av::CodecType::H264
-        }
-        fn width(&self) -> Option<u32> {
-            None
-        }
-        fn height(&self) -> Option<u32> {
-            None
-        }
-        fn extra_data(&self) -> Option<&[u8]> {
-            None
-        }
-    }
-
-    #[test]
-    fn test_ts_muxer_basic() {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let data = Vec::new();
-            let mut muxer = TSMuxer::new(Cursor::new(data));
-
-            // Add a stream
-            muxer.add_stream(Box::new(TestCodec)).await.unwrap();
-            let streams = vec![Box::new(TestCodec) as Box<dyn CodecData>];
-            muxer.write_header(&streams).await.unwrap();
-
-            // Create test packet
-            let mut packet = Packet::new(vec![0; 184]);
-            packet.stream_index = 0;
-            packet.pts = Some(0);
-            packet.dts = Some(0);
-            muxer.write_packet(packet).await.unwrap();
-        });
-    }
-
-    #[test]
-    fn test_ts_muxer_pcr_discontinuity() {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let data = Vec::new();
-            let mut muxer = TSMuxer::new(Cursor::new(data));
-            muxer.add_stream(Box::new(TestCodec)).await.unwrap();
-
-            let streams = vec![Box::new(TestCodec) as Box<dyn CodecData>];
-            muxer.write_header(&streams).await.unwrap();
-
-            // Write packet with normal PCR
-            let mut packet = Packet::new(vec![0; 184]);
-            packet.stream_index = 0;
-            packet.pts = Some(1000);
-            muxer.write_packet(packet.clone()).await.unwrap();
-
-            // Write packet with regressed PCR (should trigger discontinuity)
-            packet.pts = Some(500);
-            muxer.write_packet(packet).await.unwrap();
-        });
-    }
-}
-    async fn write_header(&mut self, _streams: &[Box<dyn CodecData>]) -> Result<()> {
-        // Add single program to PAT
-        self.pat.entries.clear();
-        self.pat.entries.push(PATEntry {
-            program_number: 1,
-            network_pid: 0,
-            program_map_pid: PID_PMT,
-        });
-
-        // Set PCR PID to the first stream's PID
-        if !self.streams.is_empty() {
-            self.pmt.pcr_pid = self.get_stream_pid(0);
-        }
-
-        // Write PAT and PMT
-        self.write_pat().await?;
-        self.write_pmt().await?;
-
-        // Reset PCR and discontinuity state
-        self.reset_pcr();
-        self.stream_discontinuity = false;
-
-        Ok(())
-    }
-
-    async fn write_packet(&mut self, packet: Packet) -> Result<()> {
-        let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
-
-        // Update PCR
-        if let Some(pts) = packet.pts {
-            self.update_pcr(Some(Duration::from_millis(pts as u64)));
-        }
-
-        let need_pcr = self.needs_pcr() && packet.stream_index == 0;
-        let is_pcr_pid = self.get_stream_pid(packet.stream_index) == self.pmt.pcr_pid;
-
-        // Calculate adaptation field size
-        let mut adaptation_size = if need_pcr && is_pcr_pid { 8 } else { 0 };
-        if self.stream_discontinuity {
-            adaptation_size += 1;
-        }
-
-        let payload_size = packet.data.len();
-        let header_size = 4; // Base TS header size
-        let stuffing_needed = if payload_size + header_size + adaptation_size < TS_PACKET_SIZE {
-            TS_PACKET_SIZE - (payload_size + header_size + adaptation_size)
-        } else {
-            0
-        };
-
-        // TS Header
-        let header = TSHeader {
-            sync_byte: 0x47,
-            transport_error: false,
-            payload_unit_start: true,
-            transport_priority: false,
-            pid: self.get_stream_pid(packet.stream_index),
-            scrambling_control: 0,
-            adaptation_field_exists: need_pcr || stuffing_needed > 0 || self.stream_discontinuity,
-            contains_payload: true,
-            continuity_counter: self.get_next_continuity_counter(packet.stream_index),
-        };
-        header.write_to(&mut buf)?;
-
-        // Write adaptation field if needed
-        if header.adaptation_field_exists {
-            self.write_adaptation_field(&mut buf, need_pcr && is_pcr_pid, stuffing_needed)?;
-            if need_pcr {
-                self.last_pcr_write = self.current_pcr;
-            }
-        }
-
-        // Write packet data
-        buf.extend_from_slice(&packet.data);
-
-        // Fill remainder with stuffing bytes if needed
-        while buf.len() < TS_PACKET_SIZE {
-            buf.put_u8(0xFF);
-        }
-
-        self.writer.write_all(&buf).await?;
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    async fn write_trailer(&mut self) -> Result<()> {
-        self.writer.flush().await?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
