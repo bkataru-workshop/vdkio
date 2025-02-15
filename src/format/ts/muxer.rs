@@ -365,6 +365,9 @@ impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+
 mod tests {
     use super::*;
     use std::io::Cursor;
