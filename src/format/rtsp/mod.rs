@@ -3,7 +3,7 @@ mod connection;
 mod transport;
 mod stream;
 
-pub use client::RTSPClient;
+pub use client::{RTSPClient, RTSPSetupOptions};
 pub use transport::{TransportInfo, CastType};
 pub use stream::{MediaStream, StreamStatistics};
 
@@ -19,61 +19,6 @@ pub enum RTSPError {
     Transport(String),
     #[error("Invalid SDP: {0}")]
     SDPError(String),
-}
-
-/// Example usage:
-/// ```no_run
-/// use vdkio::format::rtsp::RTSPClient;
-/// use std::error::Error;
-/// 
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn Error>> {
-///     // Create and connect RTSP client
-///     let mut client = RTSPClient::new("rtsp://example.com/stream")?;
-///     client.connect().await?;
-///     
-///     // Get stream information via DESCRIBE
-///     let media_descriptions = client.describe().await?;
-///     
-///     // Set up media streams from SDP
-///     for media in &media_descriptions {
-///         client.setup(media).await?;
-///     }
-///     
-///     // Start playback and receive media packets
-///     client.play().await?;
-///     
-///     if let Some(mut rx) = client.get_packet_receiver() {
-///         while let Some(packet) = rx.recv().await {
-///             println!("Received packet of size: {}", packet.len());
-///         }
-///     }
-///     
-///     Ok(())
-/// }
-/// ```
-
-#[derive(Debug, Clone)]
-pub struct MediaDescription {
-    pub media_type: String,
-    pub port: u16,
-    pub protocol: String,
-    pub format: String,
-    pub attributes: std::collections::HashMap<String, String>,
-}
-
-impl MediaDescription {
-    pub fn get_attribute(&self, name: &str) -> Option<&String> {
-        self.attributes.get(name)
-    }
-
-    pub fn set_attribute(&mut self, name: &str, value: &str) {
-        self.attributes.insert(name.to_string(), value.to_string());
-    }
-
-    pub fn remove_attribute(&mut self, name: &str) -> Option<String> {
-        self.attributes.remove(name)
-    }
 }
 
 /// Helper function to parse standard SDP media descriptions and their attributes
@@ -111,6 +56,29 @@ pub(crate) fn parse_sdp_media(media: &str) -> Result<MediaDescription, RTSPError
     Ok(description)
 }
 
+#[derive(Debug, Clone)]
+pub struct MediaDescription {
+    pub media_type: String,
+    pub port: u16,
+    pub protocol: String,
+    pub format: String,
+    pub attributes: std::collections::HashMap<String, String>,
+}
+
+impl MediaDescription {
+    pub fn get_attribute(&self, name: &str) -> Option<&String> {
+        self.attributes.get(name)
+    }
+
+    pub fn set_attribute(&mut self, name: &str, value: &str) {
+        self.attributes.insert(name.to_string(), value.to_string());
+    }
+
+    pub fn remove_attribute(&mut self, name: &str) -> Option<String> {
+        self.attributes.remove(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn test_attribute_manipulation() {
+    fn test_media_description_attributes() {
         let mut desc = MediaDescription {
             media_type: "video".to_string(),
             port: 0,

@@ -14,8 +14,54 @@ use base64::Engine as _;
 use md5::{Md5, Digest};
 use std::sync::Arc;
 use chrono::Utc;
+use tokio::time::Duration;
 
 pub const DEFAULT_BUFFER_SIZE: usize = 8192;
+
+#[derive(Debug, Clone, Default)]
+pub struct RTSPSetupOptions {
+    pub enable_video: bool,
+    pub enable_audio: bool,
+    pub video_codec_filter: Option<String>,
+    pub audio_codec_filter: Option<String>,
+    pub receive_buffer_size: usize,
+}
+
+impl RTSPSetupOptions {
+    pub fn new() -> Self {
+        Self {
+            enable_video: true,
+            enable_audio: true,
+            video_codec_filter: None,
+            audio_codec_filter: None,
+            receive_buffer_size: DEFAULT_BUFFER_SIZE,
+        }
+    }
+
+    pub fn with_video(mut self, enable: bool) -> Self {
+        self.enable_video = enable;
+        self
+    }
+
+    pub fn with_audio(mut self, enable: bool) -> Self {
+        self.enable_audio = enable;
+        self
+    }
+
+    pub fn with_video_codec(mut self, codec: &str) -> Self {
+        self.video_codec_filter = Some(codec.to_string());
+        self
+    }
+
+    pub fn with_audio_codec(mut self, codec: &str) -> Self {
+        self.audio_codec_filter = Some(codec.to_string());
+        self
+    }
+     pub fn with_buffer_size(mut self, size: usize) -> Self {
+        self.receive_buffer_size = size;
+        self
+    }
+}
 
 #[derive(Debug)]
 enum AuthMethod {
@@ -36,6 +82,9 @@ pub struct RTSPClient {
     auth_method: AuthMethod,
     realm: Option<String>,
     nonce: Option<String>,
+    reconnect_attempts: u32,
+    max_reconnect_attempts: u32,
+    reconnect_delay: Duration,
     packet_tx: Option<mpsc::Sender<Vec<u8>>>,
     last_request: Option<(String, String)>,
 }
@@ -62,6 +111,9 @@ impl RTSPClient {
             auth_method: AuthMethod::None,
             realm: None,
             nonce: None,
+            reconnect_attempts: 0,
+            max_reconnect_attempts: 3,
+            reconnect_delay: Duration::from_secs(1),
             packet_tx: Some(tx),
             last_request: None,
         })
@@ -74,6 +126,33 @@ impl RTSPClient {
 
         self.connection = Some(RTSPConnection::connect(host, port).await?);
         Ok(())
+    }
+
+     pub async fn reconnect(&mut self) -> VdkResult<bool> {
+        if self.reconnect_attempts >= self.max_reconnect_attempts {
+            return Ok(false);
+        }
+
+        println!("Attempting reconnection ({}/{})", 
+            self.reconnect_attempts + 1, 
+            self.max_reconnect_attempts
+        );
+
+        tokio::time::sleep(self.reconnect_delay).await;
+        
+        match self.connect().await {
+            Ok(_) => {
+                println!("Reconnection successful");
+                self.reconnect_attempts = 0;
+                Ok(true)
+            }
+            Err(e) => {
+                println!("Reconnection failed: {}", e);
+                self.reconnect_attempts += 1;
+                self.reconnect_delay *= 2; // Exponential backoff
+                Ok(false)
+            }
+        }
     }
 
     pub async fn describe(&mut self) -> VdkResult<Vec<MediaDescription>> {
@@ -243,15 +322,32 @@ impl RTSPClient {
                     loop {
                         match socket.recv_from(&mut buffer).await {
                             Ok((len, _addr)) => {
-                                if packet_tx.send(buffer[..len].to_vec()).await.is_err() {
-                                    break;
+                                match packet_tx.send(buffer[..len].to_vec()).await {
+                                    Ok(_) => continue,
+                                    Err(e) => {
+                                        println!("Failed to send packet: {}", e);
+                                        break;
+                                    }
                                 }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                                println!("Socket timeout, attempting reconnect");
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                                println!("Socket interrupted, continuing");
+                                tokio::task::yield_now().await;
+                                continue;
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                 tokio::task::yield_now().await;
                                 continue;
                             }
-                            Err(_) => break,
+                            Err(e) => {
+                                println!("Socket error: {}", e);
+                                break;
+                            }
                         }
                     }
                 });

@@ -86,6 +86,7 @@ struct Stream {
 #[derive(Clone)]
 struct Timeline {
     time: i64,
+    #[allow(dead_code)]
     duration: Duration,
 }
 

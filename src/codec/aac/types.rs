@@ -79,6 +79,47 @@ impl ADTSHeader {
             _ => None,
         }
     }
+
+    pub fn to_bytes(&self) -> crate::Result<Vec<u8>> {
+        let mut bytes = vec![0u8; 7]; // ADTS header is 7 bytes
+
+        // First byte: sync word (first 8 bits)
+        bytes[0] = (self.sync_word >> 4) as u8;
+
+        // Second byte: sync word (last 4 bits) + id (1 bit) + layer (2 bits) + protection_absent (1 bit)
+        bytes[1] = ((self.sync_word & 0xF) << 4) as u8 |
+                  ((self.id & 0x1) << 3) |
+                  ((self.layer & 0x3) << 1) |
+                  (self.protection_absent as u8);
+
+        // Third byte: profile (2 bits) + sample_rate_index (4 bits) + private_bit (1 bit) + channel_configuration (1 bit of 3)
+        bytes[2] = ((self.profile as u8) << 6) |
+                  ((self.sample_rate_index & 0xF) << 2) |
+                  ((self.private_bit as u8) << 1) |
+                  ((self.channel_configuration >> 2) & 0x1);
+
+        // Fourth byte: channel_configuration (2 bits) + original_copy (1 bit) + home (1 bit) + copyright_id_bit (1 bit) +
+        // copyright_id_start (1 bit) + frame_length (2 bits of 13)
+        bytes[3] = ((self.channel_configuration & 0x3) << 6) |
+                  ((self.original_copy as u8) << 5) |
+                  ((self.home as u8) << 4) |
+                  ((self.copyright_id_bit as u8) << 3) |
+                  ((self.copyright_id_start as u8) << 2) |
+                  ((self.frame_length >> 11) & 0x3) as u8;
+
+        // Fifth byte: frame_length (8 bits of remaining 11)
+        bytes[4] = ((self.frame_length >> 3) & 0xFF) as u8;
+
+        // Sixth byte: frame_length (3 bits) + buffer_fullness (5 bits of 11)
+        bytes[5] = ((self.frame_length & 0x7) << 5) as u8 |
+                  ((self.buffer_fullness >> 6) & 0x1F) as u8;
+
+        // Seventh byte: buffer_fullness (6 bits) + number_of_raw_blocks (2 bits)
+        bytes[6] = ((self.buffer_fullness & 0x3F) << 2) as u8 |
+                  (self.number_of_raw_blocks & 0x3);
+
+        Ok(bytes)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,5 +131,36 @@ pub struct AACFrame {
 impl AACFrame {
     pub fn new(config: AACConfig, data: Vec<u8>) -> Self {
         Self { config, data }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_adts_header_to_bytes() {
+        let header = ADTSHeader {
+            sync_word: 0xFFF,
+            id: 0,
+            layer: 0,
+            protection_absent: true,
+            profile: ProfileType::LC,
+            sample_rate_index: 4,  // 44.1kHz
+            private_bit: false,
+            channel_configuration: 2,  // Stereo
+            original_copy: false,
+            home: false,
+            copyright_id_bit: false,
+            copyright_id_start: false,
+            frame_length: 1031,  // Example frame length
+            buffer_fullness: 0x7FF,
+            number_of_raw_blocks: 0,
+        };
+
+        let bytes = header.to_bytes().unwrap();
+        assert_eq!(bytes.len(), 7);
+        assert_eq!(bytes[0], 0xFF);  // First byte of sync word
+        assert_eq!(bytes[1] & 0xF0, 0xF0);  // Last 4 bits of sync word
     }
 }

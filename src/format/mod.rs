@@ -1,9 +1,11 @@
 use crate::av::{Packet, CodecData};
 use crate::Result;
 
+pub mod aac;
 pub mod rtp;
 pub mod rtcp;
 pub mod rtsp;
+pub mod ts;
 
 /// Common trait for format demuxers
 #[async_trait::async_trait]
@@ -72,3 +74,5 @@ pub mod tests {
 pub use self::rtp::{RTPPacket, JitterBuffer};
 pub use self::rtcp::{RTCPPacket, ReceptionReport};
 pub use self::rtsp::{RTSPClient, MediaDescription, TransportInfo, CastType};
+pub use self::ts::{TSMuxer, TSDemuxer};
+pub use self::aac::{AACMuxer, AACDemuxer};
