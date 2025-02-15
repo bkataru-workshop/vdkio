@@ -149,9 +149,6 @@ impl Transcoder {
                         s.audio_decoder = Some(dec);
                     }
                 }
-                codec_type => {
-                    return Err(VdkError::Codec(format!("Unsupported codec type for transcoding: {:?}", codec_type)));
-                }
             }
 
             out_streams.push(s);

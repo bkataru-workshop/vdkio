@@ -274,6 +274,7 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
     }
 }
 
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
     async fn write_header(&mut self, _streams: &[Box<dyn CodecData>]) -> Result<()> {
@@ -301,7 +302,7 @@ impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
         Ok(())
     }
 
-    async fn write_packet(&mut self, packet: Packet) -> Result<()> {
+    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
 
         // Update PCR
@@ -362,6 +363,11 @@ impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
     }
 
     async fn write_trailer(&mut self) -> Result<()> {
+        self.stream_writer.flush().await?;
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<()> {
         self.stream_writer.flush().await?;
         Ok(())
     }
