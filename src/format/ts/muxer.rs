@@ -267,11 +267,11 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
             }
             self.current_pcr = time;
         }
+    }
 
     fn needs_pcr(&self) -> bool {
         self.current_pcr >= self.last_pcr_write + PCR_INTERVAL
     }
-}
 
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> Muxer for TSMuxer<W> {
