@@ -4,7 +4,6 @@ mod tests {
     use base64::Engine;
     use bytes::Bytes;
     use core::future::Future;
-    use std::env;
     use std::net::ToSocketAddrs;
     use std::path::PathBuf;
     use std::process::Command;
@@ -20,12 +19,22 @@ mod tests {
     use vdkio::format::{Muxer, RTPPacket};
     use tokio::sync::mpsc;
 
+    const TEST_NETWORK_CONNECTION_TIMEOUT: u64 = 5;
+    const TEST_RTSP_CONNECT_TIMEOUT: u64 = 15;
+    const TEST_RTSP_DESCRIBE_TIMEOUT: u64 = 60;
+    const TEST_RTSP_SETUP_TIMEOUT: u64 = 30;
+    const TEST_RTSP_PLAY_TIMEOUT: u64 = 30;
+    const TEST_HLS_PLAYLIST_CHECK_TIMEOUT: u64 = 5;
+    const TEST_PACKET_RECEIVE_TIMEOUT: u64 = 30;
+
+    const RTSP_URL: &str = "rtsp://example.com:3000/cam/realmonitor?channel=1&subtype=0";    
+
     fn test_network_connection(host: &str, port: u16) -> bool {
         // Try basic TCP connection first
         if let Ok(addrs) = format!("{}:{}", host, port).to_socket_addrs() {
             if let Some(addr) = addrs.into_iter().next() {
                 println!("Attempting TCP connection to {}...", addr);
-                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_ok() {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(TEST_NETWORK_CONNECTION_TIMEOUT)).is_ok() {
                     println!("TCP connection successful");
                     return true;
                 }
@@ -62,7 +71,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rtsp_client_live() -> Result<()> {
-        let url = "rtsp://example.com/stream";
+        // let rtsp_url = get_url_from_env(
+        //     "TEST_RTSP_URL",
+        //     "rtsp://example.com:3000/cam/realmonitor?channel=1&subtype=0",
+        // );
 
         // Test network connectivity first
         println!("Testing network connectivity...");
@@ -73,12 +85,12 @@ mod tests {
         }
 
         // Create client outside of timeout to avoid including initialization in the timeout
-        let mut client = RTSPClient::new(url)
+        let mut client = RTSPClient::new(RTSP_URL)
             .map_err(|e| VdkError::Codec(format!("Failed to create client: {}", e)))?;
 
-        // Connect with 30s timeout
+        // Connect with TEST_RTSP_CONNECT_TIMEOUT timeout
         println!("Attempting to connect...");
-        with_timeout(30, async {
+        with_timeout(TEST_RTSP_CONNECT_TIMEOUT, async {
             client
                 .connect()
                 .await
@@ -87,9 +99,9 @@ mod tests {
         .await?;
         println!("Connected successfully");
 
-        // Describe with 120s timeout
+        // Describe with TEST_RTSP_DESCRIBE_TIMEOUT timeout
         println!("Requesting stream description...");
-        let sdp = with_timeout(120, async {
+        let sdp = with_timeout(TEST_RTSP_DESCRIBE_TIMEOUT, async {
             let result = client.describe().await;
             match &result {
                 Ok(_) => println!("Describe request completed successfully"),
@@ -100,10 +112,10 @@ mod tests {
         .await?;
         println!("Received SDP with {} media streams", sdp.len());
 
-        // Setup with 60s timeout per stream
+        // Setup with TEST_RTSP_SETUP_TIMEOUT timeout per stream
         for media in &sdp {
             println!("Setting up media stream: {}", media.media_type);
-            if let Err(e) = with_timeout(60, async {
+            if let Err(e) = with_timeout(TEST_RTSP_SETUP_TIMEOUT, async {
                 client
                     .setup(media)
                     .await
@@ -117,9 +129,9 @@ mod tests {
         }
         println!("Media setup completed");
 
-        // Play with 60s timeout
+        // Play with TEST_RTSP_PLAY_TIMEOUT timeout
         println!("Starting playback...");
-        with_timeout(60, async {
+        with_timeout(TEST_RTSP_PLAY_TIMEOUT, async {
             client
                 .play()
                 .await
@@ -143,14 +155,15 @@ mod tests {
         }
     }
 
-    fn get_url_from_env(key: &str, default: &str) -> String {
-        env::var(key).unwrap_or_else(|_| default.to_string())
-    }
+    // fn get_url_from_env(key: &str, default: &str) -> String {
+    //     dotenv().ok();
+    //     env::var(key).unwrap_or_else(|_| default.to_string())
+    // }
 
     async fn check_directory(path: &PathBuf) -> Result<bool> {
         let mut interval = time::interval(Duration::from_millis(100));
         let start = time::Instant::now();
-        let timeout = Duration::from_secs(5);
+        let timeout = Duration::from_secs(TEST_HLS_PLAYLIST_CHECK_TIMEOUT);
 
         while start.elapsed() < timeout {
             interval.tick().await;
@@ -167,7 +180,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_rtsp_to_hls_pipeline() -> Result<()> {
         // Setup output directory
         let output_dir = PathBuf::from("test_output");
@@ -177,14 +189,8 @@ mod tests {
         tokio::fs::create_dir_all(&output_dir).await?;
         println!("Created output directory at {}", output_dir.display());
 
-        // Get RTSP URL
-        let rtsp_url = get_url_from_env(
-            "TEST_RTSP_URL",
-            "rtsp://example.com/stream",
-        );
-
         // Configure RTSP client
-        let mut rtsp_client = RTSPClient::new(&rtsp_url)?;
+        let mut rtsp_client = RTSPClient::new(RTSP_URL)?;
 
         println!("Connecting to RTSP stream...");
         rtsp_client.connect().await?;
@@ -307,7 +313,7 @@ mod tests {
 
             while packets < 100 {
                 // Process 100 packets
-                match timeout(Duration::from_secs(30), rx.recv()).await {
+                match timeout(Duration::from_secs(TEST_PACKET_RECEIVE_TIMEOUT), rx.recv()).await {
                     Ok(Some(data)) => {
                         // Parse RTP packet
                         if let Ok(rtp) = RTPPacket::parse(&data) {
