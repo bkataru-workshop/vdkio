@@ -29,11 +29,11 @@ These features have been thoroughly tested with live streams and are production-
 
 2. **Codec Support (via RTSP streams):**
    - **H.264:** Fully implemented and tested with live RTSP streams, including detailed handling of NALUs, SPS, and PPS.
-   - **H.265:** Basic functionality tested with live RTSP streams; complete parameter set handling is in progress.
-   - **AAC:** AAC codec parsing has been tested only as part of live RTSP streams for audio extraction. Full AAC format support remains in development.
+   - **H.265:** Basic functionality tested with live RTSP streams. Complete parameter set handling and more extensive testing are in progress.
+   - **AAC:** AAC codec parsing has been tested as part of live RTSP streams for audio extraction, confirming basic functionality. Full AAC format support and more comprehensive testing remain in development. 
 
 ### In Progress Implementations
-The following features are implemented but require additional testing and refinement:
+The following features are implemented and are undergoing further testing and refinement to ensure stability and production readiness:
 
 1. **Transport Stream (TS) Format:**
    - Core packet structure implementation ✅
@@ -47,49 +47,62 @@ The following features are implemented but require additional testing and refine
     - PCR discontinuity handling ✅
     
 2. **HLS Support:**
+    - **Basic RTSP to HLS Conversion:** Implemented and basic integration testing completed ✅. Provides a functional RTSP to HLS conversion pipeline.
     - Segment generation and management ✅
-    - Multi-bitrate streaming support ✅
-    - Master/variant playlist generation ✅
+    - Basic playlist generation and management ✅
     - Segment duration control ✅
+    - Multi-bitrate streaming support ✅
    - RTSP to HLS conversion with transcoding ✅
    - Testing Status:
      - Basic RTSP to HLS conversion tested ✅
      - Multi-bitrate adaptation tested ✅
+     - Playlist generation and segment management tested ✅
+     - Basic integration test now passing ✅
       - PCR timing accuracy tested ✅
     - Needs:
-      - Testing with different codec combinations
-     - Enhanced error recovery
- mechanisms
-     - More comprehensive live testing
+      - **Comprehensive Testing:** More comprehensive testing with varied RTSP streams and codec combinations is needed to ensure robustness and identify potential issues.
+     - Enhanced error recovery and handling mechanisms
+     - Further refinement and optimization for performance and stability
+     - More comprehensive live testing for production readiness
+   
 
 ### Preliminary Implementations
 
-The following features have preliminary implementations with basic unit tests but require thorough testing with live streams for production use:
+The following features have preliminary implementations with basic unit tests. These implementations are functional but require thorough testing with live streams and more comprehensive tests for production use. 
+
+**Note:** For formats listed under "Preliminary Implementations" and "Other Planned Implementations", live testing URLs are required for full validation and feature parity. Basic implementations and unit tests are provided, but comprehensive testing with live streams is essential for production readiness.
 
 1. **Format Support:**
-   - **AAC Format:** Basic implementation of AAC file format support (muxer/demuxer) with unit tests only. Needs live stream testing.
-   - **TS Format:** Core implementation complete with RTSP to HLS conversion support. Further testing needed with different codec combinations.
+   - **AAC Format:** Basic implementation of AAC file format support (muxer/demuxer) with unit tests only. Needs live stream testing and more comprehensive tests.
+   - **TS Format:** Core TS format implementation is complete and used in RTSP to HLS conversion. Further testing needed with different codec combinations and transport stream variations.
 
 ### Critical Next Steps
 
-1. **Transport Stream (TS):**
-   - Fine-tune PCR timing accuracy
-    - Enhance error recovery mechanisms
-    - Test with diverse stream types
+1. **Comprehensive Testing:**
+   - **HLS Support:** Conduct more comprehensive testing with varied RTSP streams and codec combinations to ensure the robustness of HLS streaming and identify any potential issues.
+   - **TS Format:** Perform thorough testing with diverse stream types and transport stream variations to fully validate TS format handling and error recovery.
 
-2. **HLS Support:**
-   - Basic segmentation ✅
-   - Basic playlist generation ✅
-   - Segment duration handling ✅
-    - Multi-bitrate streaming ✅
-   - Needs:
-     - More comprehensive testing with varied streams
-     - Multi-bitrate (adaptive) streaming
-     - Enhanced error handling
+2. **Enhanced Error Handling and Recovery:**
+   - **HLS Support:** Implement more robust error recovery and handling mechanisms for HLS streaming to improve stability and reliability in real-world scenarios.
+   - **TS Format:** Enhance error recovery mechanisms for TS format handling to ensure robust and fault-tolerant stream processing.
+
+3. **Performance Optimization:**
+   - **General:** Identify and address any performance bottlenecks in TS muxing and HLS segmenting to optimize vdkio for high-performance video streaming applications.
+
+4. **Acquire Live Testing URLs**:
+   - Obtain live testing URLs for the following formats to enable full feature validation, comprehensive testing, and ensure feature parity with the reference vdk implementation:
+     - DVRIP
+     - FLV
+     - FMP4
+     - MKV
+     - MP4 variants (MP4, MP4F, MP4M)
+     - RTMP
+     - WebRTC
+
 
 ### Other Planned Implementations
 
-The following formats from `vdk` are planned for implementation. Note that live testing URLs will be required to properly validate these implementations:
+The following formats from `vdk` are planned for implementation.  Live testing URLs will be essential to properly validate these implementations and ensure production readiness:
 
 1. **DVRIP** - Preliminary implementation planned
 2. **FLV** - Preliminary implementation planned
@@ -104,8 +117,6 @@ The following formats from `vdk` are planned for implementation. Note that live 
 11. **RTMP** - Preliminary implementation planned
 12. **WebRTC** - Preliminary implementation planned
 
-Note: For these formats, basic implementations will be provided with unit tests, but full feature parity and production readiness will require testing with live streams.
-
 ### Implementation Status Summary
 
 | Feature | vdkio Status | vdk Status | Live Testing Status |
@@ -118,7 +129,7 @@ Note: For these formats, basic implementations will be provided with unit tests,
 | AAC Codec | ⚠️ Basic | ✅ Full | ⚠️ Tested via RTSP only |
 | AAC Format | ⚠️ Basic | ✅ Full | ❌ Unit tests only |
 | TS Format | ✅ Full | ✅ Full | ✅ Tested with RTSP conversion |
-| HLS | ✅ Basic | ✅ Full | ✅ Multi-bitrate conversion tested |
+| HLS | ⚠️ Basic | ✅ Full | ⚠️ Basic RTSP to HLS conversion tested; more testing needed |
 | Other Formats | 🚧 Planned | ✅ Full | ❌ Awaiting test streams |
 
 Legend:
@@ -129,9 +140,9 @@ Legend:
 
 ### Testing Requirements
 
-For thorough testing and feature parity validation, we need:
+For thorough testing and feature parity validation, the following are needed:
 
-1. Live testing URLs for format support validation:
+1. **Live testing URLs for format support validation**: Essential for validating format implementations and achieving feature parity.
    - DVRIP
    - FLV
    - FMP4
@@ -140,10 +151,10 @@ For thorough testing and feature parity validation, we need:
    - RTMP
    - WebRTC
 
-2. Additional testing requirements:
-   - Sample files for different codecs and formats
-   - Test streams with various codec combinations
-   - Infrastructure for automated testing
+2. **Additional testing requirements**:
+   - Sample files for different codecs and formats to expand test coverage.
+   - Test streams with various codec combinations to ensure compatibility and robustness.
+   - Infrastructure for automated testing to streamline testing and ensure consistent validation.
 
 ### Acknowledgments
 

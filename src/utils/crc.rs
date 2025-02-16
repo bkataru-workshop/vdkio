@@ -84,10 +84,13 @@ mod tests {
         let calculated_crc = crc.calculate(&pmt_data);
         // This known CRC value was taken from a real TS stream's PMT
         assert_ne!(calculated_crc, 0); // We should get a non-zero CRC
-        // Test vector from STMicroelectronics community forum post
+                                       // Test vector from STMicroelectronics community forum post
         let test_data = [0x01, 0x01];
         let expected_crc = 0xD66FB816;
         let calculated_crc = crc.calculate(&test_data);
-        assert_eq!(calculated_crc, expected_crc, "CRC32 MPEG-2 calculation failed for test vector [0x01, 0x01]");
+        assert_eq!(
+            calculated_crc, expected_crc,
+            "CRC32 MPEG-2 calculation failed for test vector [0x01, 0x01]"
+        );
     }
 }

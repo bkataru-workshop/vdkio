@@ -1,8 +1,8 @@
-use crate::av::transcode::{VideoFrame, VideoEncoder, VideoDecoder, StreamCodecData};
+use super::parser::{NALType, NALUnit};
+use crate::av::transcode::{StreamCodecData, VideoDecoder, VideoEncoder, VideoFrame};
 use crate::av::CodecType;
 use crate::error::{Result, VdkError};
 use async_trait::async_trait;
-use super::parser::{NALUnit, NALType};
 
 #[allow(dead_code)]
 pub struct H264Decoder {
@@ -30,7 +30,7 @@ impl VideoDecoder for H264Decoder {
     async fn decode(&mut self, data: Vec<u8>) -> Result<Option<VideoFrame>> {
         // Parse H.264 NAL units
         let nals = NALUnit::find_units(&data)?;
-        
+
         // Process each NAL unit
         for nal in nals {
             match nal.nal_type()? {
@@ -54,7 +54,7 @@ impl VideoDecoder for H264Decoder {
                 _ => continue,
             }
         }
-        
+
         Ok(None)
     }
 
@@ -99,19 +99,19 @@ impl VideoEncoder for H264Encoder {
         // TODO: Implement actual H.264 encoding
         // For now, just pass through the data with proper NAL framing
         let mut output = Vec::new();
-        
+
         // Add SPS/PPS for keyframes
         if frame.key_frame {
             if let Some(ref extra_data) = self.extra_data {
                 output.push(extra_data.clone());
             }
         }
-        
+
         // Pass through existing encoded data
         for plane in frame.data {
             output.push(plane);
         }
-        
+
         Ok(output)
     }
 
@@ -120,9 +120,16 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
-pub fn create_transcoder_for_resolution(width: u32, height: u32, bitrate: u32, fps: u32) 
-    -> Box<dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>)> + Send + Sync> 
-{
+pub fn create_transcoder_for_resolution(
+    width: u32,
+    height: u32,
+    bitrate: u32,
+    fps: u32,
+) -> Box<
+    dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>)>
+        + Send
+        + Sync,
+> {
     Box::new(move |codec: &StreamCodecData| {
         if codec.codec_type != CodecType::H264 {
             return Err(VdkError::Codec("Unsupported codec type".into()));
@@ -164,7 +171,7 @@ mod tests {
         // Encode at lower resolution
         let packets = encoder.encode(frame).await.unwrap();
         assert!(!packets.is_empty());
-        
+
         // The output should contain at least the input data
         assert!(packets.iter().any(|p| p.len() >= input.len()));
     }

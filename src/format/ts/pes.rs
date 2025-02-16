@@ -1,11 +1,11 @@
-use bytes::{BufMut, BytesMut};
-use crate::error::Result;
 use super::types::time_to_pts;
+use crate::error::Result;
+use bytes::{BufMut, BytesMut};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct PESHeader {
-    pub start_code_prefix: u32,  // Always 0x000001
+    pub start_code_prefix: u32, // Always 0x000001
     pub stream_id: u8,
     pub packet_length: u16,
     pub scrambling_control: u8,
@@ -75,47 +75,67 @@ impl PESHeader {
         buf.put_u8((self.start_code_prefix >> 16) as u8);
         buf.put_u8((self.start_code_prefix >> 8) as u8);
         buf.put_u8(self.start_code_prefix as u8);
-        
+
         // Stream ID (1 byte)
         buf.put_u8(self.stream_id);
-        
+
         // PES packet length (2 bytes)
         buf.put_u16(self.packet_length);
-        
+
         // Flags (1 byte)
         let mut flags = 0u8;
         flags |= self.scrambling_control << 6;
-        if self.priority { flags |= 0x20; }
-        if self.data_alignment { flags |= 0x10; }
-        if self.copyright { flags |= 0x08; }
-        if self.original { flags |= 0x04; }
+        if self.priority {
+            flags |= 0x20;
+        }
+        if self.data_alignment {
+            flags |= 0x10;
+        }
+        if self.copyright {
+            flags |= 0x08;
+        }
+        if self.original {
+            flags |= 0x04;
+        }
         flags |= self.pts_dts_flags;
         buf.put_u8(flags);
-        
+
         // Additional flags (1 byte)
         let mut flags2 = 0u8;
-        if self.escr_flag { flags2 |= 0x20; }
-        if self.es_rate_flag { flags2 |= 0x10; }
-        if self.dsm_trick_mode_flag { flags2 |= 0x08; }
-        if self.additional_copy_info_flag { flags2 |= 0x04; }
-        if self.crc_flag { flags2 |= 0x02; }
-        if self.extension_flag { flags2 |= 0x01; }
+        if self.escr_flag {
+            flags2 |= 0x20;
+        }
+        if self.es_rate_flag {
+            flags2 |= 0x10;
+        }
+        if self.dsm_trick_mode_flag {
+            flags2 |= 0x08;
+        }
+        if self.additional_copy_info_flag {
+            flags2 |= 0x04;
+        }
+        if self.crc_flag {
+            flags2 |= 0x02;
+        }
+        if self.extension_flag {
+            flags2 |= 0x01;
+        }
         buf.put_u8(flags2);
-        
+
         // Header data length (1 byte)
         buf.put_u8(self.header_data_length);
-        
+
         // Write PTS if present
         if let Some(pts) = self.pts {
             let marker = if self.dts.is_some() { 0x30 } else { 0x20 };
             write_timestamp(buf, marker, pts)?;
         }
-        
+
         // Write DTS if present
         if let Some(dts) = self.dts {
             write_timestamp(buf, 0x10, dts)?;
         }
-        
+
         Ok(())
     }
 }
@@ -159,16 +179,16 @@ impl PESPacket {
 // Helper function to write PTS/DTS timestamps
 fn write_timestamp(buf: &mut BytesMut, marker: u8, ts: u64) -> Result<()> {
     let pts = ts & 0x1FFFFFFFF; // 33 bits
-    
+
     // First byte: marker bits and 3 MSB of timestamp
     buf.put_u8(marker | ((pts >> 29) & 0x0E) as u8 | 0x01);
-    
+
     // Middle 16 bits and marker
     buf.put_u16((((pts >> 14) & 0xFFFE) | 0x01) as u16);
-    
+
     // Final 15 bits and marker
     buf.put_u16((((pts << 1) & 0xFFFE) | 0x01) as u16);
-    
+
     Ok(())
 }
 
@@ -193,14 +213,13 @@ mod tests {
     fn test_pes_packet_writing() {
         let mut buf = BytesMut::new();
         let payload = vec![0; 10];
-        let packet = PESPacket::new(0xe0, payload)
-            .with_pts(Duration::from_secs(1));
+        let packet = PESPacket::new(0xe0, payload).with_pts(Duration::from_secs(1));
 
         packet.write_to(&mut buf).unwrap();
 
         // Verify start code prefix
         assert_eq!(&buf[0..3], &[0x00, 0x00, 0x01]);
-        
+
         // Verify stream ID
         assert_eq!(buf[3], 0xe0);
     }

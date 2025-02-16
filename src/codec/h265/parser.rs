@@ -1,8 +1,8 @@
 use crate::error::Result;
-use bytes::{BytesMut, Bytes, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use log;
 
-use super::types::{NALUnit, NALUnitType, SPSInfo, PPSInfo, VPSInfo, ProfileTierLevel};
+use super::types::{NALUnit, NALUnitType, PPSInfo, ProfileTierLevel, SPSInfo, VPSInfo};
 use crate::utils::bits::BitReader;
 
 #[derive(Debug)]
@@ -50,10 +50,7 @@ impl H265Parser {
         let mut i = 0;
 
         while i < data.len() {
-            if i + 2 < data.len() 
-                && data[i] == 0x00 
-                && data[i + 1] == 0x00 
-                && data[i + 2] == 0x03 {
+            if i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03 {
                 self.buffer.put_u8(0x00);
                 self.buffer.put_u8(0x00);
                 i += 3;
@@ -67,14 +64,17 @@ impl H265Parser {
     }
 
     pub fn is_keyframe(&self, nalu: &NALUnit) -> bool {
-        matches!(nalu.nal_type, 
-            NALUnitType::Idr |
-            NALUnitType::IdrNlp |
-            NALUnitType::CraNut
+        matches!(
+            nalu.nal_type,
+            NALUnitType::Idr | NALUnitType::IdrNlp | NALUnitType::CraNut
         )
     }
 
-    fn parse_profile_tier_level(&mut self, reader: &mut BitReader, profile_present_flag: bool) -> Result<ProfileTierLevel> {
+    fn parse_profile_tier_level(
+        &mut self,
+        reader: &mut BitReader,
+        profile_present_flag: bool,
+    ) -> Result<ProfileTierLevel> {
         let mut ptl = ProfileTierLevel::default();
 
         if profile_present_flag {
@@ -108,7 +108,7 @@ impl H265Parser {
         let max_layers_minus1 = reader.read_bits(6)? as u8;
         let max_sub_layers_minus1 = reader.read_bits(3)? as u8;
         let temporal_id_nesting_flag = reader.read_bit()?;
-        
+
         // Skip reserved bits
         reader.skip_bits(16)?;
 
@@ -181,7 +181,7 @@ impl H265Parser {
 
         let pps_id = reader.read_golomb()? as u32;
         let sps_id = reader.read_golomb()? as u32;
-        
+
         let dependent_slice_segments_enabled_flag = reader.read_bit()?;
         let output_flag_present_flag = reader.read_bit()?;
         let num_extra_slice_header_bits = reader.read_bits(3)? as u8;
@@ -190,7 +190,7 @@ impl H265Parser {
 
         let num_ref_idx_l0_default_active_minus1 = reader.read_golomb()? as u32;
         let num_ref_idx_l1_default_active_minus1 = reader.read_golomb()? as u32;
-        
+
         let init_qp_minus26 = reader.read_signed_golomb()?;
         let constrained_intra_pred_flag = reader.read_bit()?;
         let transform_skip_enabled_flag = reader.read_bit()?;

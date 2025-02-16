@@ -1,6 +1,6 @@
-use crate::{Result, VdkError};
+use super::types::{AACConfig, AACFrame, ADTSHeader, ProfileType};
 use crate::utils::BitReader;
-use super::types::{AACConfig, ADTSHeader, AACFrame, ProfileType};
+use crate::{Result, VdkError};
 
 #[derive(Debug)]
 pub struct AACParser {
@@ -9,14 +9,13 @@ pub struct AACParser {
 
 impl AACParser {
     pub fn new() -> Self {
-        Self {
-            config: None,
-        }
+        Self { config: None }
     }
 
     pub fn parse_frame(&mut self, data: &[u8]) -> Result<AACFrame> {
         // Try to parse as ADTS frame first
-        if data.len() >= 7 {  // Minimum ADTS header size
+        if data.len() >= 7 {
+            // Minimum ADTS header size
             if let Ok(header) = self.parse_adts_header(&data[..7]) {
                 if header.sync_word_valid() {
                     let frame_data = if header.frame_length as usize <= data.len() {
@@ -40,7 +39,9 @@ impl AACParser {
         if let Some(config) = &self.config {
             Ok(AACFrame::new(config.clone(), data.to_vec()))
         } else {
-            Err(VdkError::Parser("No AAC configuration available and data is not in ADTS format".into()))
+            Err(VdkError::Parser(
+                "No AAC configuration available and data is not in ADTS format".into(),
+            ))
         }
     }
 
@@ -136,9 +137,7 @@ mod tests {
     #[test]
     fn test_parse_frame() {
         // Same ADTS header as above + some dummy frame data
-        let mut data = vec![
-            0xFF, 0xF1, 0x50, 0x80, 0x43, 0x80, 0x00,
-        ];
+        let mut data = vec![0xFF, 0xF1, 0x50, 0x80, 0x43, 0x80, 0x00];
         // Add some dummy frame data
         data.extend_from_slice(&[1, 2, 3, 4]);
 

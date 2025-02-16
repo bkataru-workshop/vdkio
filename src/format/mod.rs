@@ -1,9 +1,9 @@
-use crate::av::{Packet, CodecData};
+use crate::av::{CodecData, Packet};
 use crate::Result;
 
 pub mod aac;
-pub mod rtp;
 pub mod rtcp;
+pub mod rtp;
 pub mod rtsp;
 pub mod ts;
 
@@ -12,7 +12,7 @@ pub mod ts;
 pub trait Demuxer: Send {
     /// Read the next packet from the stream
     async fn read_packet(&mut self) -> Result<Packet>;
-    
+
     /// Get stream information
     async fn streams(&mut self) -> Result<Vec<Box<dyn CodecData>>>;
 }
@@ -22,20 +22,20 @@ pub trait Demuxer: Send {
 pub trait Muxer: Send {
     /// Write stream header information
     async fn write_header(&mut self, streams: &[Box<dyn CodecData>]) -> Result<()>;
-    
+
     /// Write a packet to the stream
     async fn write_packet(&mut self, packet: &Packet) -> Result<()>;
-    
+
     /// Write stream trailer information
     async fn write_trailer(&mut self) -> Result<()>;
-    
+
     /// Flush any buffered packets
     async fn flush(&mut self) -> Result<()>;
 }
 
 pub mod tests {
     use super::*;
-    
+
     /// A test muxer implementation
     #[derive(Debug)]
     pub struct TestMuxer {
@@ -71,8 +71,8 @@ pub mod tests {
     }
 }
 
-pub use self::rtp::{RTPPacket, JitterBuffer};
+pub use self::aac::{AACDemuxer, AACMuxer};
 pub use self::rtcp::{RTCPPacket, ReceptionReport};
-pub use self::rtsp::{RTSPClient, MediaDescription, TransportInfo, CastType};
-pub use self::ts::{TSMuxer, TSDemuxer};
-pub use self::aac::{AACMuxer, AACDemuxer};
+pub use self::rtp::{JitterBuffer, RTPPacket};
+pub use self::rtsp::{CastType, MediaDescription, RTSPClient, TransportInfo};
+pub use self::ts::{TSDemuxer, TSMuxer};

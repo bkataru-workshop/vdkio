@@ -1,6 +1,6 @@
-use bytes::BytesMut;
-use crate::error::{Result, VdkError};
 use super::types::*;
+use crate::error::{Result, VdkError};
+use bytes::BytesMut;
 
 #[allow(dead_code)]
 pub struct TSPacketParser {
@@ -36,7 +36,11 @@ impl TSPacketParser {
         })
     }
 
-    pub fn parse_adaptation_field(&self, data: &[u8], offset: usize) -> Result<Option<AdaptationField>> {
+    pub fn parse_adaptation_field(
+        &self,
+        data: &[u8],
+        offset: usize,
+    ) -> Result<Option<AdaptationField>> {
         if (data[3] & 0x20) == 0 {
             return Ok(None);
         }
@@ -73,13 +77,12 @@ impl TSPacketParser {
             if data.len() < pos + 6 {
                 return Err(VdkError::InvalidData("PCR data too short".into()));
             }
-            let pcr_base = ((data[pos] as u64) << 25) |
-                          ((data[pos + 1] as u64) << 17) |
-                          ((data[pos + 2] as u64) << 9) |
-                          ((data[pos + 3] as u64) << 1) |
-                          ((data[pos + 4] & 0x80) as u64 >> 7);
-            let pcr_ext = (((data[pos + 4] & 0x01) as u64) << 8) |
-                         (data[pos + 5] as u64);
+            let pcr_base = ((data[pos] as u64) << 25)
+                | ((data[pos + 1] as u64) << 17)
+                | ((data[pos + 2] as u64) << 9)
+                | ((data[pos + 3] as u64) << 1)
+                | ((data[pos + 4] & 0x80) as u64 >> 7);
+            let pcr_ext = (((data[pos + 4] & 0x01) as u64) << 8) | (data[pos + 5] as u64);
             field.pcr = Some(pcr_base * 300 + pcr_ext);
             pos += 6;
         }
@@ -88,13 +91,12 @@ impl TSPacketParser {
             if data.len() < pos + 6 {
                 return Err(VdkError::InvalidData("OPCR data too short".into()));
             }
-            let opcr_base = ((data[pos] as u64) << 25) |
-                           ((data[pos + 1] as u64) << 17) |
-                           ((data[pos + 2] as u64) << 9) |
-                           ((data[pos + 3] as u64) << 1) |
-                           ((data[pos + 4] & 0x80) as u64 >> 7);
-            let opcr_ext = (((data[pos + 4] & 0x01) as u64) << 8) |
-                          (data[pos + 5] as u64);
+            let opcr_base = ((data[pos] as u64) << 25)
+                | ((data[pos + 1] as u64) << 17)
+                | ((data[pos + 2] as u64) << 9)
+                | ((data[pos + 3] as u64) << 1)
+                | ((data[pos + 4] & 0x80) as u64 >> 7);
+            let opcr_ext = (((data[pos + 4] & 0x01) as u64) << 8) | (data[pos + 5] as u64);
             field.opcr = Some(opcr_base * 300 + opcr_ext);
             pos += 6;
         }
@@ -109,7 +111,9 @@ impl TSPacketParser {
 
         if field.private_data_flag {
             if data.len() < pos + 1 {
-                return Err(VdkError::InvalidData("Private data length byte missing".into()));
+                return Err(VdkError::InvalidData(
+                    "Private data length byte missing".into(),
+                ));
             }
             let private_data_length = data[pos] as usize;
             pos += 1;
@@ -117,7 +121,6 @@ impl TSPacketParser {
                 return Err(VdkError::InvalidData("Private data too short".into()));
             }
             field.private_data = Some(data[pos..pos + private_data_length].to_vec());
-            pos += private_data_length;
         }
         Ok(Some(field))
     }
@@ -154,7 +157,9 @@ impl TSPacketParser {
         pos += 2;
 
         if pos + 2 > end {
-            return Err(VdkError::InvalidData("PMT too short for program info length".into()));
+            return Err(VdkError::InvalidData(
+                "PMT too short for program info length".into(),
+            ));
         }
 
         let program_info_length = ((data[pos] as usize & 0x0F) << 8) | data[pos + 1] as usize;
@@ -164,7 +169,8 @@ impl TSPacketParser {
             if pos + program_info_length > end {
                 return Err(VdkError::InvalidData("Program info data too short".into()));
             }
-            pmt.program_descriptors = self.parse_descriptors(&data[pos..pos + program_info_length])?;
+            pmt.program_descriptors =
+                self.parse_descriptors(&data[pos..pos + program_info_length])?;
             pos += program_info_length;
         }
 

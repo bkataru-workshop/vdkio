@@ -38,13 +38,17 @@ impl<'a> NALUnit<'a> {
         for i in 0..data.len() - 3 {
             if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
                 if start > 0 && start < i {
-                    units.push(NALUnit { data: &data[start..i] });
+                    units.push(NALUnit {
+                        data: &data[start..i],
+                    });
                 }
                 start = i + 3;
             }
             if i > 0 && data[i - 1] == 0 && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
                 if start > 0 && start < i - 1 {
-                    units.push(NALUnit { data: &data[start..(i - 1)] });
+                    units.push(NALUnit {
+                        data: &data[start..(i - 1)],
+                    });
                 }
                 start = i + 3;
             }
@@ -52,14 +56,17 @@ impl<'a> NALUnit<'a> {
 
         // Add final unit
         if start > 0 && start < data.len() {
-            units.push(NALUnit { data: &data[start..] });
+            units.push(NALUnit {
+                data: &data[start..],
+            });
         }
 
         Ok(units)
     }
 
     pub fn header(&self) -> Result<u8> {
-        self.data.first()
+        self.data
+            .first()
             .copied()
             .ok_or_else(|| VdkError::Codec("Empty NAL unit".into()))
     }

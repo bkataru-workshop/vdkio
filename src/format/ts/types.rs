@@ -1,6 +1,6 @@
-use std::time::Duration;
-use bytes::{BufMut, BytesMut};
 use crate::error::Result;
+use bytes::{BufMut, BytesMut};
+use std::time::Duration;
 
 // Stream IDs
 pub const STREAM_ID_H264: u8 = 0xe0;
@@ -97,7 +97,7 @@ impl PMT {
 
     pub fn len(&self) -> usize {
         let mut n = 4; // PCRPID + program info length
-        
+
         // Program descriptors
         for desc in &self.program_descriptors {
             n += 2 + desc.data.len();
@@ -119,9 +119,13 @@ impl PMT {
         buf.put_u16(self.pcr_pid & 0x1fff | 7 << 13);
 
         // Program descriptors
-        let prog_desc_len = self.program_descriptors.iter().map(|d| 2 + d.data.len()).sum::<usize>();
+        let prog_desc_len = self
+            .program_descriptors
+            .iter()
+            .map(|d| 2 + d.data.len())
+            .sum::<usize>();
         buf.put_u16((prog_desc_len as u16) & 0x3ff | 0xf << 12);
-        
+
         for desc in &self.program_descriptors {
             buf.put_u8(desc.tag);
             buf.put_u8(desc.data.len() as u8);
@@ -132,10 +136,14 @@ impl PMT {
         for info in &self.elementary_stream_infos {
             buf.put_u8(info.stream_type);
             buf.put_u16(info.elementary_pid & 0x1fff | 7 << 13);
-            
-            let es_desc_len = info.descriptors.iter().map(|d| 2 + d.data.len()).sum::<usize>();
+
+            let es_desc_len = info
+                .descriptors
+                .iter()
+                .map(|d| 2 + d.data.len())
+                .sum::<usize>();
             buf.put_u16((es_desc_len as u16) & 0x3ff | 0xf << 12);
-            
+
             for desc in &info.descriptors {
                 buf.put_u8(desc.tag);
                 buf.put_u8(desc.data.len() as u8);
@@ -166,7 +174,7 @@ pub struct AdaptationField {
 
 #[derive(Debug)]
 pub struct TSHeader {
-    pub sync_byte: u8,            // Always 0x47
+    pub sync_byte: u8, // Always 0x47
     pub transport_error: bool,
     pub payload_unit_start: bool,
     pub transport_priority: bool,
@@ -196,22 +204,32 @@ impl Default for TSHeader {
 impl TSHeader {
     pub fn write_to(&self, buf: &mut BytesMut) -> Result<()> {
         buf.put_u8(self.sync_byte);
-        
+
         let mut b1 = 0u8;
-        if self.transport_error { b1 |= 0x80; }
-        if self.payload_unit_start { b1 |= 0x40; }
-        if self.transport_priority { b1 |= 0x20; }
+        if self.transport_error {
+            b1 |= 0x80;
+        }
+        if self.payload_unit_start {
+            b1 |= 0x40;
+        }
+        if self.transport_priority {
+            b1 |= 0x20;
+        }
         b1 |= ((self.pid >> 8) & 0x1f) as u8;
         buf.put_u8(b1);
-        
+
         buf.put_u8((self.pid & 0xff) as u8);
-        
+
         let mut b3 = self.scrambling_control << 6;
-        if self.adaptation_field_exists { b3 |= 0x20; }
-        if self.contains_payload { b3 |= 0x10; }
+        if self.adaptation_field_exists {
+            b3 |= 0x20;
+        }
+        if self.contains_payload {
+            b3 |= 0x10;
+        }
         b3 |= self.continuity_counter & 0x0f;
         buf.put_u8(b3);
-        
+
         Ok(())
     }
 }

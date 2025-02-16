@@ -1,11 +1,10 @@
-use vdkio::format::rtsp::RTSPClient;
 use std::error::Error;
-use tokio::time::sleep;
 use std::time::Duration;
+use tokio::time::sleep;
+use vdkio::format::rtsp::RTSPClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
     // Create RTSP client
     let url = std::env::args()
         .nth(1)
@@ -21,7 +20,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Get stream information
     let sdp = client.describe().await?;
     println!("Received SDP description:");
-    
 
     // Set up video stream if available
     if let Some(video) = sdp.iter().find(|m| m.media_type == "video") {
@@ -50,7 +48,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Get packet receiver for handling media data
     if let Some(mut rx) = client.get_packet_receiver() {
         println!("Starting packet receiver");
-        
+
         // Spawn packet handling task
         tokio::spawn(async move {
             let mut video_packets = 0;
@@ -59,13 +57,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             while let Some(packet) = rx.recv().await {
                 // Basic RTP packet analysis
-                if packet.len() >= 12 { // Minimum RTP header size
+                if packet.len() >= 12 {
+                    // Minimum RTP header size
                     let payload_type = packet[1] & 0x7f;
                     match payload_type {
-                        96..=99 => { // Common video payload types
+                        96..=99 => {
+                            // Common video payload types
                             video_packets += 1;
                         }
-                        0..=95 => { // Common audio payload types
+                        0..=95 => {
+                            // Common audio payload types
                             audio_packets += 1;
                         }
                         _ => {}
@@ -74,18 +75,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Print statistics every second
                     let elapsed = start_time.elapsed().as_secs();
                     if elapsed > 0 && elapsed % 1 == 0 {
+                        println!("Statistics after {} seconds:", elapsed);
                         println!(
-                            "Statistics after {} seconds:", 
-                            elapsed
-                        );
-                        println!(
-                            "  Video packets: {} ({} p/s)", 
-                            video_packets, 
+                            "  Video packets: {} ({} p/s)",
+                            video_packets,
                             video_packets as f64 / elapsed as f64
                         );
                         println!(
-                            "  Audio packets: {} ({} p/s)", 
-                            audio_packets, 
+                            "  Audio packets: {} ({} p/s)",
+                            audio_packets,
                             audio_packets as f64 / elapsed as f64
                         );
                     }

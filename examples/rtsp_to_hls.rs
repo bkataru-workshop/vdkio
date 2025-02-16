@@ -1,15 +1,17 @@
-use vdkio::format::rtsp::{RTSPClient, RTSPSetupOptions};
-use vdkio::format::ts::{HLSSegmenter, TSMuxer, HLSVariant};
-use vdkio::av::{CodecType, Packet};
-use vdkio::format::Muxer;
-use vdkio::av::transcode::{Transcoder, TranscodeOptions, StreamCodecData, VideoEncoder, VideoDecoder};
-use vdkio::codec::h264::transcode::create_transcoder_for_resolution;
-use vdkio::error::VdkError;
-use std::time::Duration;
-use std::path::Path;
 use bytes::Bytes;
+use std::path::Path;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::time;
+use vdkio::av::transcode::{
+    StreamCodecData, TranscodeOptions, Transcoder, VideoDecoder, VideoEncoder,
+};
+use vdkio::av::{CodecType, Packet};
+use vdkio::codec::h264::transcode::create_transcoder_for_resolution;
+use vdkio::error::VdkError;
+use vdkio::format::rtsp::{RTSPClient, RTSPSetupOptions};
+use vdkio::format::ts::{HLSSegmenter, HLSVariant, TSMuxer};
+use vdkio::format::Muxer;
 
 #[allow(dead_code)]
 struct HLSVariantConfig {
@@ -22,8 +24,19 @@ struct HLSVariantConfig {
     transcoder: Transcoder,
 }
 
-fn create_codec_factory(width: u32, height: u32, bitrate: u32, fps: u32) -> Box<dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>), VdkError> + Send + Sync> {
-    Box::new(create_transcoder_for_resolution(width, height, bitrate, fps))
+fn create_codec_factory(
+    width: u32,
+    height: u32,
+    bitrate: u32,
+    fps: u32,
+) -> Box<
+    dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>), VdkError>
+        + Send
+        + Sync,
+> {
+    Box::new(create_transcoder_for_resolution(
+        width, height, bitrate, fps,
+    ))
 }
 
 async fn setup_variant(
@@ -51,14 +64,21 @@ async fn setup_variant(
 
     // Create transcoding options based on target resolution
     let options = TranscodeOptions {
-        find_video_codec: Some(create_codec_factory(resolution.0, resolution.1, bandwidth, fps)),
+        find_video_codec: Some(create_codec_factory(
+            resolution.0,
+            resolution.1,
+            bandwidth,
+            fps,
+        )),
         find_audio_codec: None, // Pass through audio for now
     };
 
     let transcoder = Transcoder::new(codecs.to_vec(), options)?;
-    
+
     // Initialize muxer with transcoded streams info
-    let codec_boxes: Vec<Box<dyn vdkio::av::CodecData>> = transcoder.streams().iter()
+    let codec_boxes: Vec<Box<dyn vdkio::av::CodecData>> = transcoder
+        .streams()
+        .iter()
         .map(|s| Box::new(s.clone()) as Box<dyn vdkio::av::CodecData>)
         .collect();
     muxer.write_header(&codec_boxes).await?;
@@ -74,9 +94,12 @@ async fn setup_variant(
     })
 }
 
-async fn setup_rtsp_client(url: &str, options: RTSPSetupOptions) -> Result<(RTSPClient, Vec<StreamCodecData>), Box<dyn std::error::Error>> {
+async fn setup_rtsp_client(
+    url: &str,
+    options: RTSPSetupOptions,
+) -> Result<(RTSPClient, Vec<StreamCodecData>), Box<dyn std::error::Error>> {
     let mut client = RTSPClient::new(url)?;
-    
+
     // Attempt initial connection
     if let Err(e) = client.connect().await {
         println!("Initial connection failed: {}", e);
@@ -84,17 +107,18 @@ async fn setup_rtsp_client(url: &str, options: RTSPSetupOptions) -> Result<(RTSP
             return Err(e.into());
         }
     }
-    
+
     // Get stream information
     let media_descriptions = client.describe().await?;
     let mut codecs = Vec::new();
-    
+
     // Setup each media stream
     for media in &media_descriptions {
-        if (media.media_type == "video" && options.enable_video) ||
-           (media.media_type == "audio" && options.enable_audio) {
+        if (media.media_type == "video" && options.enable_video)
+            || (media.media_type == "audio" && options.enable_audio)
+        {
             client.setup(media).await?;
-            
+
             let codec_type = match &media.media_type[..] {
                 "video" => CodecType::H264,
                 "audio" => CodecType::AAC,
@@ -115,37 +139,35 @@ async fn setup_rtsp_client(url: &str, options: RTSPSetupOptions) -> Result<(RTSP
             });
         }
     }
-    
+
     Ok((client, codecs))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    let rtsp_url = std::env::var("RTSP_URL")
-        .expect("RTSP_URL environment variable must be set");
+    let rtsp_url = std::env::var("RTSP_URL").expect("RTSP_URL environment variable must be set");
     let hls_output_dir = Path::new("output/hls");
-    
+
     // Create output directory
     tokio::fs::create_dir_all(hls_output_dir).await?;
 
     // Setup RTSP client with options
-    let setup_options = RTSPSetupOptions::new()
-        .with_video(true)
-        .with_audio(true);
-    
+    let setup_options = RTSPSetupOptions::new().with_video(true).with_audio(true);
+
     let (mut client, codecs) = setup_rtsp_client(&rtsp_url, setup_options).await?;
 
     // Create variant configs with different resolutions and bitrates
     let variants = vec![
-        ("high", 2_000_000, (1280, 720), 30),    // 720p @ 30fps
-        ("medium", 1_000_000, (854, 480), 30),   // 480p @ 30fps
-        ("low", 500_000, (640, 360), 30),        // 360p @ 30fps
+        ("high", 2_000_000, (1280, 720), 30),  // 720p @ 30fps
+        ("medium", 1_000_000, (854, 480), 30), // 480p @ 30fps
+        ("low", 500_000, (640, 360), 30),      // 360p @ 30fps
     ];
 
     let mut variant_configs = Vec::new();
     for (name, bandwidth, resolution, fps) in variants {
-        let config = setup_variant(name, bandwidth, resolution, fps, hls_output_dir, &codecs).await?;
+        let config =
+            setup_variant(name, bandwidth, resolution, fps, hls_output_dir, &codecs).await?;
         variant_configs.push(config);
     }
 
@@ -154,15 +176,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut master_playlist_file = File::create(&master_playlist_path).await?;
 
     // Write initial master playlist
-    variant_configs[0].segmenter.write_master_playlist(&mut master_playlist_file).await?;
-    
+    variant_configs[0]
+        .segmenter
+        .write_master_playlist(&mut master_playlist_file)
+        .await?;
+
     // Start playback
     client.play().await?;
-    
+
     println!("Starting RTSP to multi-bitrate HLS conversion...");
     println!("Writing segments to: {}", hls_output_dir.display());
     println!("Master playlist: {}", master_playlist_path.display());
-    
+
     if let Some(mut rx) = client.get_packet_receiver() {
         let mut pts = 0;
         let pts_increment = 3600; // 90kHz clock
@@ -178,24 +203,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Process packet for each variant
                     for config in &mut variant_configs {
-                        if config.segmenter.should_start_new_segment(Duration::from_millis(pts as u64 / 90)) {
-                            let _segment_file = config.segmenter.start_segment(Duration::from_millis(pts as u64 / 90)).await?;
-                            
+                        if config
+                            .segmenter
+                            .should_start_new_segment(Duration::from_millis(pts as u64 / 90))
+                        {
+                            let _segment_file = config
+                                .segmenter
+                                .start_segment(Duration::from_millis(pts as u64 / 90))
+                                .await?;
+
                             // Transcode packet for this variant
-                            let transcoded_packets = config.transcoder.transcode_packet(packet.clone()).await?;
+                            let transcoded_packets =
+                                config.transcoder.transcode_packet(packet.clone()).await?;
                             for p in transcoded_packets {
                                 config.muxer.write_packet(&p).await?;
                             }
-                            
-                            config.segmenter.finish_segment(Duration::from_millis((pts + pts_increment) as u64 / 90)).await?;
-                            
+
+                            config
+                                .segmenter
+                                .finish_segment(Duration::from_millis(
+                                    (pts + pts_increment) as u64 / 90,
+                                ))
+                                .await?;
+
                             // Update variant playlist
-                            let playlist_path = hls_output_dir.join(format!("{}.m3u8", config.name));
+                            let playlist_path =
+                                hls_output_dir.join(format!("{}.m3u8", config.name));
                             let mut playlist_file = File::create(playlist_path).await?;
                             config.segmenter.write_playlist(&mut playlist_file).await?;
                         } else {
                             // Transcode packet for this variant
-                            let transcoded_packets = config.transcoder.transcode_packet(packet.clone()).await?;
+                            let transcoded_packets =
+                                config.transcoder.transcode_packet(packet.clone()).await?;
                             for p in transcoded_packets {
                                 config.muxer.write_packet(&p).await?;
                             }
@@ -203,8 +242,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // Update master playlist periodically
-                    if pts % (pts_increment * 30) == 0 { // Every 30 frames
-                        variant_configs[0].segmenter.write_master_playlist(&mut master_playlist_file).await?;
+                    if pts % (pts_increment * 30) == 0 {
+                        // Every 30 frames
+                        variant_configs[0]
+                            .segmenter
+                            .write_master_playlist(&mut master_playlist_file)
+                            .await?;
                     }
                 }
                 Ok(None) => {
@@ -226,9 +269,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    
+
     // Clean up
     client.teardown().await?;
-    
+
     Ok(())
 }

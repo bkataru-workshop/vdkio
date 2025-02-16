@@ -1,20 +1,16 @@
+use super::{
+    connection::RTSPConnection, stream::MediaStream, transport::TransportInfo, MediaDescription,
+};
+use crate::{Result as VdkResult, VdkError};
+use base64;
+use base64::Engine as _;
+use chrono::Utc;
+use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::mpsc;
-use crate::{Result as VdkResult, VdkError};
-use super::{
-    connection::RTSPConnection,
-    stream::MediaStream,
-    transport::TransportInfo,
-    MediaDescription,
-};
-use url::Url;
-use base64;
-use base64::Engine as _;
-use md5::{Md5, Digest};
-use std::sync::Arc;
-use chrono::Utc;
 use tokio::time::Duration;
+use url::Url;
 
 pub const DEFAULT_BUFFER_SIZE: usize = 8192;
 
@@ -57,7 +53,7 @@ impl RTSPSetupOptions {
         self.audio_codec_filter = Some(codec.to_string());
         self
     }
-     pub fn with_buffer_size(mut self, size: usize) -> Self {
+    pub fn with_buffer_size(mut self, size: usize) -> Self {
         self.receive_buffer_size = size;
         self
     }
@@ -91,8 +87,8 @@ pub struct RTSPClient {
 
 impl RTSPClient {
     pub fn new(url: &str) -> VdkResult<Self> {
-        let parsed_url = Url::parse(url)
-            .map_err(|e| VdkError::Protocol(format!("Invalid URL: {}", e)))?;
+        let parsed_url =
+            Url::parse(url).map_err(|e| VdkError::Protocol(format!("Invalid URL: {}", e)))?;
 
         if parsed_url.scheme() != "rtsp" {
             return Err(VdkError::Protocol("URL scheme is not 'rtsp'".into()));
@@ -106,7 +102,11 @@ impl RTSPClient {
             cseq: AtomicU32::new(1),
             session: None,
             streams: HashMap::new(),
-            username: parsed_url.username().is_empty().then(|| None).unwrap_or_else(|| Some(parsed_url.username().to_string())),
+            username: parsed_url
+                .username()
+                .is_empty()
+                .then(|| None)
+                .unwrap_or_else(|| Some(parsed_url.username().to_string())),
             password: parsed_url.password().map(String::from),
             auth_method: AuthMethod::None,
             realm: None,
@@ -121,25 +121,28 @@ impl RTSPClient {
 
     pub async fn connect(&mut self) -> VdkResult<()> {
         let port = self.url.port().unwrap_or(554);
-        let host = self.url.host_str()
+        let host = self
+            .url
+            .host_str()
             .ok_or_else(|| VdkError::Protocol("No host in URL".into()))?;
 
         self.connection = Some(RTSPConnection::connect(host, port).await?);
         Ok(())
     }
 
-     pub async fn reconnect(&mut self) -> VdkResult<bool> {
+    pub async fn reconnect(&mut self) -> VdkResult<bool> {
         if self.reconnect_attempts >= self.max_reconnect_attempts {
             return Ok(false);
         }
 
-        println!("Attempting reconnection ({}/{})", 
-            self.reconnect_attempts + 1, 
+        println!(
+            "Attempting reconnection ({}/{})",
+            self.reconnect_attempts + 1,
             self.max_reconnect_attempts
         );
 
         tokio::time::sleep(self.reconnect_delay).await;
-        
+
         match self.connect().await {
             Ok(_) => {
                 println!("Reconnection successful");
@@ -186,12 +189,12 @@ impl RTSPClient {
                     if let Some(media) = current_media.take() {
                         media_descriptions.push(media);
                     }
-                    
+
                     // Parse new media section
                     if let Ok(media) = super::parse_sdp_media(&line[2..]) {
                         current_media = Some(media);
                     }
-                },
+                }
                 Some('a') if line.starts_with("a=") => {
                     if let Some(attr_str) = line.strip_prefix("a=") {
                         let (name, value) = if let Some((n, v)) = attr_str.split_once(':') {
@@ -207,7 +210,7 @@ impl RTSPClient {
                             global_attrs.insert(name.to_string(), value.to_string());
                         }
                     }
-                },
+                }
                 _ => continue,
             }
         }
@@ -222,7 +225,10 @@ impl RTSPClient {
         }
 
         // Process global control and apply to media sections
-        let base_control = global_attrs.get("control").map(|s| s.as_str()).unwrap_or("*");
+        let base_control = global_attrs
+            .get("control")
+            .map(|s| s.as_str())
+            .unwrap_or("*");
         let base_url = if base_control == "*" {
             self.url.as_str().trim_end_matches('/')
         } else {
@@ -250,7 +256,8 @@ impl RTSPClient {
     }
 
     pub async fn setup(&mut self, media: &MediaDescription) -> VdkResult<()> {
-        let control = media.get_attribute("control")
+        let control = media
+            .get_attribute("control")
             .ok_or_else(|| VdkError::Protocol("No control attribute in media".into()))?;
 
         let setup_url = if control.starts_with("rtsp://") {
@@ -265,7 +272,8 @@ impl RTSPClient {
             &media.media_type,
             control,
             transport.clone(),
-            self.packet_tx.as_ref()
+            self.packet_tx
+                .as_ref()
                 .ok_or_else(|| VdkError::Protocol("No packet sender available".into()))?
                 .clone(),
         );
@@ -273,9 +281,9 @@ impl RTSPClient {
         let request = self.build_request(
             "SETUP",
             &setup_url,
-            &[("Transport", &stream.get_transport_str())]
+            &[("Transport", &stream.get_transport_str())],
         );
-        
+
         let response = self.send_request(&request).await?;
         let (headers, _) = self.split_response(&response)?;
 
@@ -297,27 +305,55 @@ impl RTSPClient {
         Err(VdkError::Protocol("Failed to setup media stream".into()))
     }
 
+    pub async fn setup_with_stream(&mut self, stream: MediaStream) -> VdkResult<()> {
+        // Send SETUP request with TCP transport
+        let setup_url = if stream.control.starts_with("rtsp://") {
+            stream.control.clone()
+        } else {
+            format!(
+                "{}/{}",
+                self.url.as_str().trim_end_matches('/'),
+                stream.control
+            )
+        };
+
+        let request = self.build_request(
+            "SETUP",
+            &setup_url,
+            &[("Transport", &stream.get_transport_str())],
+        );
+
+        let response = self.send_request(&request).await?;
+        let (headers, _) = self.split_response(&response)?;
+
+        for line in headers.lines() {
+            if line.starts_with("Session: ") {
+                self.session = Some(line[9..].trim().to_string());
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn play(&mut self) -> VdkResult<()> {
-        let session = self.session.as_ref()
+        let session = self
+            .session
+            .as_ref()
             .ok_or_else(|| VdkError::Protocol("No session established".into()))?;
 
         let request = self.build_request(
             "PLAY",
             self.url.as_str(),
-            &[
-                ("Session", session),
-                ("Range", "npt=0.000-")
-            ]
+            &[("Session", session), ("Range", "npt=0.000-")],
         );
-        
+
         let _response = self.send_request(&request).await?;
 
         for stream in self.streams.values_mut() {
             if let Some(socket) = stream.rtp_socket.take() {
-                let socket = Arc::new(socket);
                 let packet_tx = stream.packet_sender.clone();
                 let mut buffer = vec![0u8; DEFAULT_BUFFER_SIZE];
-                
+
                 tokio::spawn(async move {
                     loop {
                         match socket.recv_from(&mut buffer).await {
@@ -369,9 +405,12 @@ impl RTSPClient {
 
     fn build_request(&self, method: &str, path: &str, headers: &[(&str, &str)]) -> String {
         let mut request = format!("{} {} RTSP/1.0\r\n", method, path);
-        request.push_str(&format!("CSeq: {}\r\n", self.cseq.fetch_add(1, Ordering::SeqCst)));
+        request.push_str(&format!(
+            "CSeq: {}\r\n",
+            self.cseq.fetch_add(1, Ordering::SeqCst)
+        ));
         request.push_str("User-Agent: vdkio/1.0\r\n");
-        
+
         for &(name, value) in headers {
             request.push_str(&format!("{}: {}\r\n", name, value));
         }
@@ -384,12 +423,18 @@ impl RTSPClient {
         request
     }
 
-    fn split_response<'a>(&self, response: &'a [u8]) -> VdkResult<(&'a str, &'a [u8])> {
-        for i in 0..response.len()-3 {
-            if &response[i..i+4] == b"\r\n\r\n" {
-                let headers = std::str::from_utf8(&response[..i])
-                    .map_err(|_| VdkError::Protocol("Invalid UTF-8 in headers".into()))?;
-                let body = &response[i+4..];
+    fn split_response<'a>(&self, response: &'a [u8]) -> VdkResult<(String, &'a [u8])> {
+        for i in 0..response.len() - 3 {
+            if &response[i..i + 4] == b"\r\n\r\n" {
+                // Replace non-ASCII bytes with spaces
+                let filtered_headers: Vec<u8> = response[..i]
+                    .iter()
+                    .map(|&b| if b.is_ascii() { b } else { b' ' })
+                    .collect();
+
+                // Convert to owned String, ignoring any non-UTF8 sequences
+                let headers = String::from_utf8_lossy(&filtered_headers).into_owned();
+                let body = &response[i + 4..];
                 return Ok((headers, body));
             }
         }
@@ -397,11 +442,15 @@ impl RTSPClient {
     }
 
     async fn send_request(&mut self, request: &str) -> VdkResult<Vec<u8>> {
-        let conn = self.connection.as_mut()
+        let conn = self
+            .connection
+            .as_mut()
             .ok_or_else(|| VdkError::Protocol("Not connected".into()))?;
 
         // Extract and store method and URL from request
-        let first_line = request.lines().next()
+        let first_line = request
+            .lines()
+            .next()
             .ok_or_else(|| VdkError::Protocol("Invalid request format".into()))?;
         let parts: Vec<&str> = first_line.split_whitespace().collect();
         if parts.len() >= 2 {
@@ -414,26 +463,33 @@ impl RTSPClient {
         println!("Received response:\n{}", String::from_utf8_lossy(&response));
 
         let (headers, _) = self.split_response(&response)?;
-        let status = headers.lines().next()
+        let status = headers
+            .lines()
+            .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u32>().ok())
             .ok_or_else(|| VdkError::Protocol("Invalid response status".into()))?;
 
         match status {
             200 => Ok(response),
-            401 => self.handle_auth(headers, &response).await,
-            _ => Err(VdkError::Protocol(format!("Request failed with status {}", status))),
+            401 => self.handle_auth(&headers, &response).await,
+            _ => Err(VdkError::Protocol(format!(
+                "Request failed with status {}",
+                status
+            ))),
         }
     }
 
     async fn handle_auth(&mut self, _headers: &str, response: &[u8]) -> VdkResult<Vec<u8>> {
         println!("Handling auth challenge...");
-        
+
         // Parse WWW-Authenticate header and set up auth method
         self.parse_auth_challenge(response)?;
 
         // Get original request details from stored values
-        let (method, url) = self.last_request.as_ref()
+        let (method, url) = self
+            .last_request
+            .as_ref()
             .ok_or_else(|| VdkError::Protocol("No previous request found".into()))?;
         println!("Original request was: {} {}", method, url);
 
@@ -441,17 +497,24 @@ impl RTSPClient {
         let auth_request = self.build_authenticated_request(method, url)?;
         println!("Sending authenticated request:\n{}", &auth_request);
 
-        let conn = self.connection.as_mut()
+        let conn = self
+            .connection
+            .as_mut()
             .ok_or_else(|| VdkError::Protocol("Not connected".into()))?;
 
         // Send authenticated request
         conn.write_all(auth_request.as_bytes()).await?;
         let auth_response = conn.read_response().await?;
-        println!("Received auth response:\n{}", String::from_utf8_lossy(&auth_response));
+        println!(
+            "Received auth response:\n{}",
+            String::from_utf8_lossy(&auth_response)
+        );
 
         // Check if authentication succeeded
         let (headers, _) = self.split_response(&auth_response)?;
-        let status = headers.lines().next()
+        let status = headers
+            .lines()
+            .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u32>().ok())
             .ok_or_else(|| VdkError::Protocol("Invalid response status".into()))?;
@@ -459,7 +522,10 @@ impl RTSPClient {
         if status == 200 {
             Ok(auth_response)
         } else {
-            Err(VdkError::Protocol(format!("Authentication failed with status {}", status)))
+            Err(VdkError::Protocol(format!(
+                "Authentication failed with status {}",
+                status
+            )))
         }
     }
 
@@ -488,7 +554,10 @@ impl RTSPClient {
 
                     self.realm = parts.get("realm").map(|&s| s.to_string());
                     self.nonce = parts.get("nonce").map(|&s| s.to_string());
-                    println!("Parsed Digest auth - realm: {:?}, nonce: {:?}", self.realm, self.nonce);
+                    println!(
+                        "Parsed Digest auth - realm: {:?}, nonce: {:?}",
+                        self.realm, self.nonce
+                    );
                     return Ok(());
                 } else if auth_header.starts_with("Basic ") {
                     self.auth_method = AuthMethod::Basic;
@@ -496,20 +565,29 @@ impl RTSPClient {
                 }
             }
         }
-        
-        Err(VdkError::Protocol("No authentication challenge found".into()))
+
+        Err(VdkError::Protocol(
+            "No authentication challenge found".into(),
+        ))
     }
 
     fn build_authenticated_request(&self, method: &str, url: &str) -> VdkResult<String> {
         match self.auth_method {
             AuthMethod::Digest => {
                 let (username, password) = self.get_credentials()?;
-                let realm = self.realm.as_deref()
+                let realm = self
+                    .realm
+                    .as_deref()
                     .ok_or_else(|| VdkError::Protocol("No realm in auth challenge".into()))?;
-                let nonce = self.nonce.as_deref()
+                let nonce = self
+                    .nonce
+                    .as_deref()
                     .ok_or_else(|| VdkError::Protocol("No nonce in auth challenge".into()))?;
 
-                println!("Building Digest auth with realm '{}' and nonce '{}'", realm, nonce);
+                println!(
+                    "Building Digest auth with realm '{}' and nonce '{}'",
+                    realm, nonce
+                );
 
                 let ha1 = md5_hash(&format!("{}:{}:{}", username, realm, password));
                 let ha2 = md5_hash(&format!("{}:{}", method, url));
@@ -521,7 +599,10 @@ impl RTSPClient {
                 );
 
                 let mut request = format!("{} {} RTSP/1.0\r\n", method, url);
-                request.push_str(&format!("CSeq: {}\r\n", self.cseq.fetch_add(1, Ordering::SeqCst)));
+                request.push_str(&format!(
+                    "CSeq: {}\r\n",
+                    self.cseq.fetch_add(1, Ordering::SeqCst)
+                ));
                 request.push_str("User-Agent: vdkio/1.0\r\n");
                 request.push_str(&format!("Authorization: {}\r\n", auth_header));
                 request.push_str("\r\n");
@@ -533,12 +614,14 @@ impl RTSPClient {
                 let (username, password) = self.get_credentials()?;
                 println!("Building Basic auth for user '{}'", username);
 
-                let auth = base64::engine::general_purpose::STANDARD.encode(
-                    format!("{}:{}", username, password).as_bytes()
-                );
+                let auth = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}:{}", username, password).as_bytes());
                 let auth_header = format!("Basic {}", auth);
                 let mut request = format!("{} {} RTSP/1.0\r\n", method, url);
-                request.push_str(&format!("CSeq: {}\r\n", self.cseq.fetch_add(1, Ordering::SeqCst)));
+                request.push_str(&format!(
+                    "CSeq: {}\r\n",
+                    self.cseq.fetch_add(1, Ordering::SeqCst)
+                ));
                 request.push_str("User-Agent: vdkio/1.0\r\n");
                 request.push_str(&format!("Authorization: {}\r\n", auth_header));
                 request.push_str("\r\n");
@@ -546,9 +629,9 @@ impl RTSPClient {
                 println!("Built Basic auth request:\n{}", request);
                 Ok(request)
             }
-            AuthMethod::None => {
-                Err(VdkError::Protocol("Authentication required but no credentials available".into()))
-            }
+            AuthMethod::None => Err(VdkError::Protocol(
+                "Authentication required but no credentials available".into(),
+            )),
         }
     }
 
@@ -569,12 +652,9 @@ impl RTSPClient {
 
     pub async fn teardown(&mut self) -> VdkResult<()> {
         if let Some(ref session) = self.session {
-            let request = self.build_request(
-                "TEARDOWN",
-                self.url.as_str(),
-                &[("Session", session)]
-            );
-            
+            let request =
+                self.build_request("TEARDOWN", self.url.as_str(), &[("Session", session)]);
+
             let _response = self.send_request(&request).await?;
         }
 
@@ -593,9 +673,9 @@ fn md5_hash(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
-    #[allow(dead_code)]    
+    #[allow(dead_code)]
     async fn test_rtsp_client_lifecycle() {
         let url = "rtsp://example.com/stream";
         let mut client = RTSPClient::new(&url).unwrap();
@@ -605,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(dead_code)]    
+    #[allow(dead_code)]
     fn test_url_parsing() {
         assert!(RTSPClient::new("rtsp://example.com/stream").is_ok());
         assert!(RTSPClient::new("rtsp://user:pass@example.com:8554/stream").is_ok());
@@ -614,31 +694,31 @@ mod tests {
     }
 
     #[test]
-    #[allow(dead_code)]    
+    #[allow(dead_code)]
     fn test_request_building() {
         let client = RTSPClient::new("rtsp://example.com/stream").unwrap();
-        
+
         let request = client.build_request(
             "DESCRIBE",
             "rtsp://example.com/stream",
-            &[("Accept", "application/sdp")]
+            &[("Accept", "application/sdp")],
         );
-        
+
         assert!(request.starts_with("DESCRIBE rtsp://example.com/stream RTSP/1.0\r\n"));
         assert!(request.contains("Accept: application/sdp\r\n"));
         assert!(request.ends_with("\r\n"));
         assert!(request.contains("CSeq: 1\r\n"));
-        
+
         let second_request = client.build_request(
             "SETUP",
             "rtsp://example.com/stream",
-            &[("Transport", "RTP/AVP;unicast")]
+            &[("Transport", "RTP/AVP;unicast")],
         );
         assert!(second_request.contains("CSeq: 2\r\n"));
     }
 
     #[test]
-    #[allow(dead_code)]    
+    #[allow(dead_code)]
     fn test_split_response() {
         let client = RTSPClient::new("rtsp://example.com/stream").unwrap();
         let response = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\n\r\nbody";

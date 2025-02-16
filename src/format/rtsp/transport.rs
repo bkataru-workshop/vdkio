@@ -85,7 +85,8 @@ impl TransportInfo {
                         info.mode = Some(value.to_string());
                     }
                     _ => {
-                        info.extra_params.insert(key.to_string(), Some(value.to_string()));
+                        info.extra_params
+                            .insert(key.to_string(), Some(value.to_string()));
                     }
                 }
             } else {
@@ -99,11 +100,14 @@ impl TransportInfo {
     /// Generate a transport header string
     pub fn to_string(&self) -> String {
         let mut parts = vec![self.protocol.clone()];
-        
-        parts.push(match self.cast_type {
-            CastType::Unicast => "unicast",
-            CastType::Multicast => "multicast",
-        }.to_string());
+
+        parts.push(
+            match self.cast_type {
+                CastType::Unicast => "unicast",
+                CastType::Multicast => "multicast",
+            }
+            .to_string(),
+        );
 
         if let (Some(rtp), Some(rtcp)) = (self.client_port_rtp, self.client_port_rtcp) {
             parts.push(format!("client_port={}-{}", rtp, rtcp));
@@ -158,7 +162,8 @@ mod tests {
 
     #[test]
     fn test_transport_parse_full() {
-        let transport = "RTP/AVP;unicast;client_port=5000-5001;server_port=6000-6001;ssrc=0x12345678;mode=play";
+        let transport =
+            "RTP/AVP;unicast;client_port=5000-5001;server_port=6000-6001;ssrc=0x12345678;mode=play";
         let info = TransportInfo::parse(transport).unwrap();
         assert_eq!(info.protocol, "RTP/AVP");
         assert_eq!(info.cast_type, CastType::Unicast);

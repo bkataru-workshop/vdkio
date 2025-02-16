@@ -1,9 +1,9 @@
+use bytes::Bytes;
 use tokio::fs::File as AsyncFile;
 use tokio::io::{BufReader, BufWriter};
 use vdkio::av::{CodecData, CodecType, Packet};
-use vdkio::format::{Muxer, Demuxer};
-use vdkio::format::ts::{TSMuxer, TSDemuxer};
-use bytes::Bytes; 
+use vdkio::format::ts::{TSDemuxer, TSMuxer};
+use vdkio::format::{Demuxer, Muxer};
 
 #[derive(Clone)]
 struct DummyCodecData {
@@ -14,15 +14,15 @@ impl CodecData for DummyCodecData {
     fn codec_type(&self) -> CodecType {
         self.codec_type
     }
-    
+
     fn width(&self) -> Option<u32> {
         None
     }
-    
+
     fn height(&self) -> Option<u32> {
         None
     }
-    
+
     fn extra_data(&self) -> Option<&[u8]> {
         None
     }
@@ -39,8 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Define streams
     let streams = vec![
-        Box::new(DummyCodecData { codec_type: CodecType::H264 }) as Box<dyn CodecData>,
-        Box::new(DummyCodecData { codec_type: CodecType::AAC }) as Box<dyn CodecData>,
+        Box::new(DummyCodecData {
+            codec_type: CodecType::H264,
+        }) as Box<dyn CodecData>,
+        Box::new(DummyCodecData {
+            codec_type: CodecType::AAC,
+        }) as Box<dyn CodecData>,
     ];
 
     // Write header and initialize streams
@@ -85,9 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let packet = demuxer.read_packet().await?;
         println!(
             "Packet: stream_index={}, pts={:?}, is_key={}",
-            packet.stream_index,
-            packet.pts,
-            packet.is_key
+            packet.stream_index, packet.pts, packet.is_key
         );
     }
 

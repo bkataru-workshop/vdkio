@@ -75,7 +75,7 @@ impl RTCPPacket {
 
         let padding = (first_byte & 0x20) != 0;
         let count = first_byte & 0x1f;
-        
+
         let length = u16::from_be_bytes([data[2], data[3]]) as usize;
         if data.len() < (length + 1) * 4 {
             return Err(RTCPError::InvalidPacket);
@@ -90,7 +90,8 @@ impl RTCPPacket {
         };
 
         match packet_type {
-            200 => { // Sender Report
+            200 => {
+                // Sender Report
                 if payload_end - offset < 20 {
                     return Err(RTCPError::InvalidPacket);
                 }
@@ -165,7 +166,8 @@ impl RTCPPacket {
                     reports,
                 })
             }
-            201 => { // Receiver Report
+            201 => {
+                // Receiver Report
                 if payload_end - offset < 4 {
                     return Err(RTCPError::InvalidPacket);
                 }
@@ -226,10 +228,10 @@ pub fn get_ntp_timestamp() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    
+
     // Convert to NTP format (seconds since 1900)
     let ntp_seconds = now.as_secs() + 2_208_988_800; // Seconds between 1900 and 1970
     let ntp_fraction = ((now.subsec_nanos() as u64) << 32) / 1_000_000_000;
-    
+
     (ntp_seconds << 32) | ntp_fraction
 }

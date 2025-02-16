@@ -1,10 +1,10 @@
-use crate::format::rtp::JitterBuffer;
-use crate::format::rtcp::RTCPPacket;
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
 use super::transport::TransportInfo;
+use crate::format::rtcp::RTCPPacket;
+use crate::format::rtp::JitterBuffer;
 use crate::Result;
 use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct StreamStatistics {
@@ -31,20 +31,19 @@ impl Default for StreamStatistics {
 
 #[derive(Debug)]
 pub struct MediaStream {
-    pub media_type: String,
-    pub control: String,
-    pub transport: TransportInfo,
-    pub rtp_socket: Option<Arc<UdpSocket>>,
-    pub rtcp_socket: Option<Arc<UdpSocket>>,
-    pub jitter_buffer: JitterBuffer,
-    pub statistics: StreamStatistics,
-    pub packet_sender: mpsc::Sender<Vec<u8>>,
+pub media_type: String,
+pub control: String,
+pub transport: TransportInfo,
+pub rtp_socket: Option<Arc<UdpSocket>>,
+pub rtcp_socket: Option<Arc<UdpSocket>>,
+pub jitter_buffer: JitterBuffer,
+pub statistics: StreamStatistics,
+pub packet_sender: mpsc::Sender<Vec<u8>>,
 }
-
 impl MediaStream {
     pub fn new(
-        media_type: &str, 
-        control: &str, 
+        media_type: &str,
+        control: &str,
         transport: TransportInfo,
         packet_sender: mpsc::Sender<Vec<u8>>,
     ) -> Self {
@@ -60,16 +59,39 @@ impl MediaStream {
         }
     }
 
-    pub async fn setup_transport(&mut self) -> Result<()> {
-        if let Some(rtp_port) = self.transport.client_port_rtp {
-            // Create RTP socket
-            let rtp_socket = UdpSocket::bind(format!("0.0.0.0:{}", rtp_port)).await?;
-            self.rtp_socket = Some(Arc::new(rtp_socket));
+    pub fn with_tcp_transport(mut self, interleaved: (u16, u16)) -> Self {
+        let mut extra_params = self.transport.extra_params.clone();
+        extra_params.insert(
+            "interleaved".to_string(),
+            Some(format!("{}-{}", interleaved.0, interleaved.1)),
+        );
 
-            // Create RTCP socket if port is specified
-            if let Some(rtcp_port) = self.transport.client_port_rtcp {
-                let rtcp_socket = UdpSocket::bind(format!("0.0.0.0:{}", rtcp_port)).await?;
-                self.rtcp_socket = Some(Arc::new(rtcp_socket));
+        self.transport = TransportInfo {
+            protocol: "RTP/AVP/TCP".to_string(),
+            cast_type: self.transport.cast_type,
+            client_port_rtp: None, // Not used in TCP mode
+            client_port_rtcp: None,
+            server_port_rtp: None,
+            server_port_rtcp: None,
+            ssrc: self.transport.ssrc,
+            mode: Some("PLAY".to_string()),
+            extra_params,
+        };
+        self
+    }
+
+    pub async fn setup_transport(&mut self) -> Result<()> {
+        if self.transport.protocol != "RTP/AVP/TCP" {
+            if let Some(rtp_port) = self.transport.client_port_rtp {
+                // Create RTP socket
+                let rtp_socket = UdpSocket::bind(format!("0.0.0.0:{}", rtp_port)).await?;
+                self.rtp_socket = Some(Arc::new(rtp_socket));
+
+                // Create RTCP socket if port is specified
+                if let Some(rtcp_port) = self.transport.client_port_rtcp {
+                    let rtcp_socket = UdpSocket::bind(format!("0.0.0.0:{}", rtcp_port)).await?;
+                    self.rtcp_socket = Some(Arc::new(rtcp_socket));
+                }
             }
         }
         Ok(())
@@ -77,11 +99,32 @@ impl MediaStream {
 
     pub fn get_transport_str(&self) -> String {
         let mut transport = format!("{};unicast", self.transport.protocol);
-        
-        if let (Some(rtp), Some(rtcp)) = (self.transport.client_port_rtp, self.transport.client_port_rtcp) {
-            transport.push_str(&format!(";client_port={}-{}", rtp, rtcp));
+
+        // For UDP mode, include port info
+        if self.transport.protocol == "RTP/AVP" {
+            if let (Some(rtp), Some(rtcp)) = (
+                self.transport.client_port_rtp,
+                self.transport.client_port_rtcp,
+            ) {
+                transport.push_str(&format!(";client_port={}-{}", rtp, rtcp));
+            }
         }
 
+        // For TCP mode, include interleaved channels
+        if self.transport.protocol == "RTP/AVP/TCP" {
+            if let Some(channels) = self.transport.extra_params.get("interleaved") {
+                if let Some(channel_range) = channels {
+                    transport.push_str(&format!(";interleaved={}", channel_range));
+                }
+            }
+        }
+
+        // Add mode if specified
+        if let Some(mode) = &self.transport.mode {
+            transport.push_str(&format!(";mode={}", mode));
+        }
+
+        // Add SSRC if specified
         if let Some(ssrc) = self.transport.ssrc {
             transport.push_str(&format!(";ssrc={:08x}", ssrc));
         }
@@ -93,7 +136,7 @@ impl MediaStream {
         let stats = &mut self.statistics;
         stats.packets_received += 1;
         stats.bytes_received += bytes as u64;
-        
+
         // Handle sequence number wrapping
         if stats.last_seq != 0 {
             let expected = stats.last_seq.wrapping_add(1);
@@ -109,8 +152,8 @@ impl MediaStream {
 
         // Update jitter calculation (RFC 3550)
         if stats.last_timestamp != 0 {
-            let d = ((timestamp as i64 - stats.last_timestamp as i64) -
-                    (seq as i64 - stats.last_seq as i64) * 90000) as f64; // Assuming 90kHz clock
+            let d = ((timestamp as i64 - stats.last_timestamp as i64)
+                - (seq as i64 - stats.last_seq as i64) * 90000) as f64; // Assuming 90kHz clock
             stats.jitter += (d.abs() - stats.jitter) / 16.0;
         }
 
@@ -123,7 +166,7 @@ impl MediaStream {
         RTCPPacket::ReceiverReport {
             ssrc,
             reports: vec![crate::format::rtcp::ReceptionReport {
-                ssrc: ssrc,
+                ssrc,
                 fraction_lost: if stats.packets_received > 0 {
                     ((stats.packets_lost * 256) / stats.packets_received) as u8
                 } else {
@@ -132,7 +175,7 @@ impl MediaStream {
                 packets_lost: stats.packets_lost,
                 highest_seq: stats.last_seq as u32,
                 jitter: stats.jitter as u32,
-                last_sr: 0, // Will be filled in when sending
+                last_sr: 0,       // Will be filled in when sending
                 delay_last_sr: 0, // Will be filled in when sending
             }],
         }
@@ -142,7 +185,6 @@ impl MediaStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_transport_str_generation() {
@@ -158,18 +200,30 @@ mod tests {
             extra_params: Default::default(),
         };
 
-        let stream = MediaStream::new(
-            "video",
-            "trackID=1",
-            transport,
-            mpsc::channel(1).0,
-        );
+        let stream = MediaStream::new("video", "trackID=1", transport, mpsc::channel(1).0);
 
         let transport_str = stream.get_transport_str();
         assert!(transport_str.contains("RTP/AVP"));
         assert!(transport_str.contains("unicast"));
         assert!(transport_str.contains("client_port=5000-5001"));
         assert!(transport_str.contains("ssrc=12345678"));
+    }
+
+    #[test]
+    fn test_tcp_transport_str_generation() {
+        let mut stream = MediaStream::new(
+            "video",
+            "trackID=1",
+            TransportInfo::new_rtp_avp((0, 0)), // Ports not used in TCP
+            mpsc::channel(1).0,
+        );
+
+        stream = stream.with_tcp_transport((0, 1));
+        let transport_str = stream.get_transport_str();
+        assert!(transport_str.contains("RTP/AVP/TCP"));
+        assert!(transport_str.contains("unicast"));
+        assert!(transport_str.contains("interleaved=0-1"));
+        assert!(transport_str.contains("mode=PLAY"));
     }
 
     #[test]
@@ -186,21 +240,16 @@ mod tests {
             extra_params: Default::default(),
         };
 
-        let mut stream = MediaStream::new(
-            "video",
-            "trackID=1",
-            transport,
-            mpsc::channel(1).0,
-        );
+        let mut stream = MediaStream::new("video", "trackID=1", transport, mpsc::channel(1).0);
 
         // Test normal packet sequence
         stream.update_statistics(1000, 90000, 1000);
         stream.update_statistics(1001, 90090, 1000);
-        
+
         assert_eq!(stream.statistics.packets_received, 2);
         assert_eq!(stream.statistics.bytes_received, 2000);
         assert_eq!(stream.statistics.packets_lost, 0);
-        
+
         // Test packet loss
         stream.update_statistics(1003, 90270, 1000);
         assert_eq!(stream.statistics.packets_lost, 1);
@@ -209,12 +258,7 @@ mod tests {
     #[test]
     fn test_generate_rtcp_report() {
         let transport = TransportInfo::new_rtp_avp((5000, 5001));
-        let mut stream = MediaStream::new(
-            "video",
-            "trackID=1",
-            transport,
-            mpsc::channel(1).0
-        );
+        let mut stream = MediaStream::new("video", "trackID=1", transport, mpsc::channel(1).0);
 
         stream.update_statistics(1000, 90000, 1000);
         stream.update_statistics(1002, 90180, 1000); // One packet lost
@@ -222,7 +266,11 @@ mod tests {
         let ssrc = 0x12345678;
         let rtcp_packet = stream.generate_rtcp_report(ssrc);
 
-        if let RTCPPacket::ReceiverReport { ssrc: pkt_ssrc, reports } = rtcp_packet {
+        if let RTCPPacket::ReceiverReport {
+            ssrc: pkt_ssrc,
+            reports,
+        } = rtcp_packet
+        {
             assert_eq!(pkt_ssrc, ssrc);
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].ssrc, ssrc);

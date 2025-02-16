@@ -1,11 +1,11 @@
 mod client;
 mod connection;
-mod transport;
 mod stream;
+mod transport;
 
 pub use client::{RTSPClient, RTSPSetupOptions};
-pub use transport::{TransportInfo, CastType};
 pub use stream::{MediaStream, StreamStatistics};
+pub use transport::{CastType, TransportInfo};
 
 use thiserror::Error;
 
@@ -24,7 +24,8 @@ pub enum RTSPError {
 /// Helper function to parse standard SDP media descriptions and their attributes
 pub(crate) fn parse_sdp_media(media: &str) -> Result<MediaDescription, RTSPError> {
     let mut lines = media.lines();
-    let media_line = lines.next()
+    let media_line = lines
+        .next()
         .ok_or_else(|| RTSPError::SDPError("Empty media description".into()))?;
 
     let parts: Vec<&str> = media_line.split_whitespace().collect();
@@ -34,7 +35,9 @@ pub(crate) fn parse_sdp_media(media: &str) -> Result<MediaDescription, RTSPError
 
     let mut description = MediaDescription {
         media_type: parts[0].to_string(),
-        port: parts[1].parse().map_err(|_| RTSPError::SDPError("Invalid port".into()))?,
+        port: parts[1]
+            .parse()
+            .map_err(|_| RTSPError::SDPError("Invalid port".into()))?,
         protocol: parts[2].to_string(),
         format: parts[3].to_string(),
         attributes: std::collections::HashMap::new(),

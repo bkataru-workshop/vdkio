@@ -5,13 +5,13 @@ use thiserror::Error;
 pub enum VdkError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("codec error: {0}")]
     Codec(String),
-    
+
     #[error("protocol error: {0}")]
     Protocol(String),
-    
+
     #[error("parser error: {0}")]
     Parser(String),
 

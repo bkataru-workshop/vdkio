@@ -72,7 +72,7 @@ impl RTPPacket {
         let padding = (first_byte & 0x20) != 0;
         let extension = (first_byte & 0x10) != 0;
         let csrc_count = first_byte & 0x0f;
-        
+
         let marker = (second_byte & 0x80) != 0;
         let payload_type = second_byte & 0x7f;
 
@@ -81,7 +81,7 @@ impl RTPPacket {
         let ssrc = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
 
         let mut offset = 12;
-        
+
         let mut csrc = Vec::with_capacity(csrc_count as usize);
         for _ in 0..csrc_count {
             if offset + 4 > data.len() {
@@ -180,8 +180,7 @@ impl JitterBuffer {
         }
 
         // Handle sequence number wrapping
-        if (seq < 0x4000 && self.max_seq > 0xC000) || 
-           (seq > 0xC000 && self.min_seq < 0x4000) {
+        if (seq < 0x4000 && self.max_seq > 0xC000) || (seq > 0xC000 && self.min_seq < 0x4000) {
             return Err(RTPError::SequenceWrapped);
         }
 
@@ -229,14 +228,7 @@ mod tests {
     #[test]
     fn test_rtp_packet_creation() {
         let payload = Bytes::from(vec![1, 2, 3, 4]);
-        let packet = RTPPacket::new(
-            96,
-            1000,
-            90000,
-            0x12345678,
-            true,
-            payload.clone(),
-        );
+        let packet = RTPPacket::new(96, 1000, 90000, 0x12345678, true, payload.clone());
 
         assert_eq!(packet.version, 2);
         assert_eq!(packet.payload_type, 96);
@@ -260,14 +252,7 @@ mod tests {
         ];
 
         for (seq, payload) in packets {
-            let packet = RTPPacket::new(
-                96,
-                seq,
-                90000,
-                0x12345678,
-                false,
-                Bytes::from(payload),
-            );
+            let packet = RTPPacket::new(96, seq, 90000, 0x12345678, false, Bytes::from(payload));
             jb.push(packet).unwrap();
         }
 

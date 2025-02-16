@@ -1,13 +1,14 @@
-use tokio::io::{self, AsyncWrite, AsyncWriteExt};
+use super::hls::HLSSegmenter;
+use super::parser::TSPacketParser;
+use super::types::*;
 use crate::av::{self, Packet};
-use crate::format::Muxer as FormatMuxer;
 use crate::error::{Result, VdkError};
+use crate::format::Muxer as FormatMuxer;
+use crate::utils::crc::Crc32Mpeg2;
 use bytes::{BufMut, BytesMut};
 use std::time::Duration;
-use crate::utils::crc::Crc32Mpeg2;
-use super::types::*;
-use super::parser::TSPacketParser;
-use super::hls::HLSSegmenter;
+use tokio::fs::File;
+use tokio::io::{self, AsyncWrite, AsyncWriteExt};
 
 const PCR_INTERVAL: Duration = Duration::from_millis(40); // ~25 PCR updates per second
 
@@ -20,10 +21,18 @@ struct TSCodecData {
 }
 
 impl av::CodecData for TSCodecData {
-    fn codec_type(&self) -> av::CodecType { self.codec_type }
-    fn width(&self) -> Option<u32> { self.width }
-    fn height(&self) -> Option<u32> { self.height }
-    fn extra_data(&self) -> Option<&[u8]> { self.extra_data.as_deref() }
+    fn codec_type(&self) -> av::CodecType {
+        self.codec_type
+    }
+    fn width(&self) -> Option<u32> {
+        self.width
+    }
+    fn height(&self) -> Option<u32> {
+        self.height
+    }
+    fn extra_data(&self) -> Option<&[u8]> {
+        self.extra_data.as_deref()
+    }
 }
 
 pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
@@ -100,7 +109,6 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
     }
 }
 
-
 #[async_trait::async_trait]
 impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
     async fn write_header(&mut self, streams: &[Box<dyn av::CodecData>]) -> Result<()> {
@@ -144,7 +152,7 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
 
         // Write PAT
         let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
-        
+
         // PAT header
         let header = TSHeader {
             sync_byte: 0x47,
@@ -158,33 +166,33 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
             continuity_counter: 0,
         };
         header.write_to(&mut buf)?;
-        
+
         // Write PAT content
         buf.put_u8(0); // Pointer field
         buf.put_u8(TABLE_ID_PAT);
-        
+
         let mut section = BytesMut::new();
         self.pat.write_to(&mut section)?;
-        
+
         let section_length = section.len() + 5 + 4;
         buf.put_u16((0xB000 | section_length as u16) & 0x3FF);
         buf.put_u16(1); // Transport stream ID
         buf.put_u8(0xC1); // Version 0, current
-        
+
         buf.put_u8(0); // Section number
         buf.put_u8(0); // Last section number
-        
+
         buf.extend_from_slice(&section);
-        
+
         // Calculate and write CRC
-        let crc = self.crc.calculate(&buf[5..5+section_length-4].to_vec());
+        let crc = self.crc.calculate(&buf[5..5 + section_length - 4].to_vec());
         buf.put_u32(crc);
-        
+
         // Stuffing
         while buf.len() < TS_PACKET_SIZE {
             buf.put_u8(0xFF);
         }
-        
+
         self.stream_writer.write_all(&buf).await?;
         self.stream_writer.flush().await?;
 
@@ -273,16 +281,50 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
         // Write payload
         buf.extend_from_slice(&packet.data);
 
+        if let Some(segmenter) = &mut self.hls_segmenter {
+            let current_time = Duration::from_millis(packet.pts.unwrap_or(0) as u64); // Use packet PTS as time
+            if segmenter.should_start_new_segment(current_time) {
+                if let Err(e) = segmenter.finish_segment(current_time).await {
+                    println!("Error finishing segment: {}", e); // Log error but continue
+                }
+                if let Err(e) = segmenter.start_segment(current_time).await {
+                    return Err(VdkError::Codec(format!("Failed to start segment: {}", e)));
+                }
+            }
+        }
+
         self.stream_writer.write_all(&buf).await?;
         self.stream_writer.flush().await?;
         Ok(())
     }
 
-    async fn write_trailer(&mut self) -> Result<()> {
-        self.stream_writer.flush().await?;
-        Ok(())
-    }
-
+    
+        async fn write_trailer(&mut self) -> Result<()> {
+            if let Some(segmenter) = &mut self.hls_segmenter {
+                let current_time = self.current_pcr; // Use current PCR time for segment end
+                if let Err(e) = segmenter.finish_segment(current_time).await {
+                    println!("Error finishing last segment: {}", e); // Log error but continue
+                }
+    
+                let playlist_path = segmenter.get_output_dir().join("playlist.m3u8");
+                let playlist_file = File::create(playlist_path).await?;
+                let mut playlist_writer = io::BufWriter::new(playlist_file);
+    
+                if let Err(e) = segmenter.write_playlist(&mut playlist_writer).await {
+                    println!("Error writing playlist: {}", e); // Log error but continue
+                }
+                if let Err(e) = segmenter.write_master_playlist(&mut playlist_writer).await {
+                    println!("Error writing master playlist: {}", e); // Log error but continue
+                }
+    
+                if let Err(e) = playlist_writer.flush().await {
+                    println!("Error flushing playlist writer: {}", e); // Log error but continue
+                }
+            }
+    
+            self.stream_writer.flush().await?;
+            Ok(())
+        }
     async fn flush(&mut self) -> Result<()> {
         self.stream_writer.flush().await?;
         Ok(())
@@ -292,9 +334,8 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+   use std::io::Cursor;
     use tokio::runtime::Runtime;
-    use crate::av::{self, CodecData, CodecDataExt}; 
 
     #[derive(Clone)]
     struct TestCodec;
@@ -303,15 +344,15 @@ mod tests {
         fn codec_type(&self) -> av::CodecType {
             av::CodecType::H264
         }
-        
+
         fn width(&self) -> Option<u32> {
             None
         }
-        
+
         fn height(&self) -> Option<u32> {
             None
         }
-        
+
         fn extra_data(&self) -> Option<&[u8]> {
             None
         }

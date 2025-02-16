@@ -11,10 +11,10 @@ use crate::error::{Result, VdkError};
 /// Example:
 /// ```
 /// use vdkio::utils::BitReader;
-/// 
+///
 /// let data = [0b10110011];
 /// let mut reader = BitReader::new(&data);
-/// 
+///
 /// assert_eq!(reader.read_bit().unwrap(), true);   // 1
 /// assert_eq!(reader.read_bits(3).unwrap(), 0b011); // 011
 /// ```
@@ -65,14 +65,14 @@ impl<'a> BitReader<'a> {
 
         let mut value = 0u32;
         let n = n as usize;
-        
+
         for i in 0..n {
             let bit = self.read_bit()?;
             if bit {
                 value |= 1 << (n - 1 - i);
             }
         }
-        
+
         Ok(value)
     }
 
@@ -150,7 +150,7 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod test_utils {
     // Test utilities for encoding exp-Golomb codes
-    
+
     /// Encodes a single value as exp-Golomb code per H.264/H.265 spec.
     pub fn encode_golomb(value: u32) -> Vec<u8> {
         if value == 0 {
@@ -159,13 +159,13 @@ mod test_utils {
 
         let leading_zeros = 32 - (value + 1).leading_zeros() - 1;
         let info = value - ((1u32 << leading_zeros) - 1);
-        
+
         let total_bits = (leading_zeros as usize) * 2 + 1;
         let total_bytes = (total_bits + 7) / 8;
         let mut result = vec![0u8; total_bytes];
 
         let mut bit_pos: usize = 0;
-        
+
         // Write M zeros (already 0)
         bit_pos += leading_zeros as usize;
 
@@ -188,8 +188,8 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_utils::*;
+    use super::*;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -249,8 +249,12 @@ mod tests {
 
             // Verify our encoder generates same pattern
             let encoded = encode_golomb(*expected);
-            assert_eq!(&encoded[..1], input, 
-                      "Encoding {} gave wrong pattern", expected);
+            assert_eq!(
+                &encoded[..1],
+                input,
+                "Encoding {} gave wrong pattern",
+                expected
+            );
         }
 
         // Test error on invalid input
@@ -286,7 +290,7 @@ mod tests {
         assert!(reader.read_bit().is_err());
 
         // Test invalid Golomb code (too many zeros)
-        let data = vec![0; 5];  // 40 zeros
+        let data = vec![0; 5]; // 40 zeros
         let mut reader = BitReader::new(&data);
         assert!(reader.read_golomb().is_err());
 

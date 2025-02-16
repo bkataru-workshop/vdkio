@@ -15,7 +15,7 @@ impl RTSPConnection {
         let stream = TcpStream::connect(&addr)
             .await
             .map_err(|e| VdkError::Protocol(format!("Failed to connect to {}: {}", addr, e)))?;
-        
+
         stream.set_nodelay(true)?;
 
         Ok(Self {
@@ -33,7 +33,7 @@ impl RTSPConnection {
     pub async fn read_response(&mut self) -> Result<Vec<u8>> {
         self.buffer.clear();
         let mut temp_buf = [0; 4096];
-        
+
         loop {
             match self.stream.read(&mut temp_buf).await {
                 Ok(0) => {
@@ -55,6 +55,17 @@ impl RTSPConnection {
             }
         }
 
+        // Find the start of the RTSP response
+        if let Some(pos) = self.buffer.windows(8).position(|window| window == b"RTSP/1.0") {
+            if pos > 0 {
+                // There was some garbage data before the RTSP response, remove it
+                self.buffer.drain(0..pos);
+            }
+        } else {
+            return Err(VdkError::Protocol("Invalid RTSP response format: missing RTSP/1.0".into()));
+        }
+        
+        // Return the cleaned response
         Ok(self.buffer.clone())
     }
 

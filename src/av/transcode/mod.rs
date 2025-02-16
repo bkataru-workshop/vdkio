@@ -1,9 +1,9 @@
-use std::time::Duration;
 use crate::av::{CodecData, CodecType, Packet};
 use crate::error::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
 use bytes::Bytes;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct VideoFrame {
@@ -34,15 +34,15 @@ impl CodecData for StreamCodecData {
     fn codec_type(&self) -> CodecType {
         self.codec_type
     }
-    
+
     fn width(&self) -> Option<u32> {
         self.width
     }
-    
+
     fn height(&self) -> Option<u32> {
         self.height
     }
-    
+
     fn extra_data(&self) -> Option<&[u8]> {
         self.extra_data.as_deref()
     }
@@ -111,8 +111,20 @@ impl Timeline {
 }
 
 pub struct TranscodeOptions {
-    pub find_video_codec: Option<Box<dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>)> + Send + Sync>>,
-    pub find_audio_codec: Option<Box<dyn Fn(&StreamCodecData) -> Result<(Box<dyn AudioEncoder>, Box<dyn AudioDecoder>)> + Send + Sync>>,
+    pub find_video_codec: Option<
+        Box<
+            dyn Fn(&StreamCodecData) -> Result<(Box<dyn VideoEncoder>, Box<dyn VideoDecoder>)>
+                + Send
+                + Sync,
+        >,
+    >,
+    pub find_audio_codec: Option<
+        Box<
+            dyn Fn(&StreamCodecData) -> Result<(Box<dyn AudioEncoder>, Box<dyn AudioDecoder>)>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 
 pub struct Transcoder {
@@ -195,9 +207,7 @@ impl Transcoder {
     }
 
     pub fn streams(&self) -> Vec<StreamCodecData> {
-        self.streams.iter()
-            .map(|s| s.codec.clone())
-            .collect()
+        self.streams.iter().map(|s| s.codec.clone()).collect()
     }
 
     pub fn close(&mut self) {
@@ -224,14 +234,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_transcoder_passthrough() {
-        let codecs = vec![
-            StreamCodecData {
-                codec_type: CodecType::H264,
-                width: Some(1920),
-                height: Some(1080),
-                extra_data: None,
-            }
-        ];
+        let codecs = vec![StreamCodecData {
+            codec_type: CodecType::H264,
+            width: Some(1920),
+            height: Some(1080),
+            extra_data: None,
+        }];
 
         let options = TranscodeOptions {
             find_video_codec: None,
@@ -244,7 +252,10 @@ mod tests {
             .with_stream_index(0)
             .with_pts(1000);
 
-        let output_packets = transcoder.transcode_packet(input_packet.clone()).await.unwrap();
+        let output_packets = transcoder
+            .transcode_packet(input_packet.clone())
+            .await
+            .unwrap();
         assert_eq!(output_packets.len(), 1);
         assert_eq!(output_packets[0].stream_index, input_packet.stream_index);
         assert_eq!(output_packets[0].pts, input_packet.pts);

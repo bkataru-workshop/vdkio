@@ -1,14 +1,11 @@
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
-use crate::av::{self, CodecData, CodecDataExt, CodecType, Packet};
+use super::{parser::TSPacketParser, types::*};
+use crate::av::{self, CodecData, CodecType, Packet};
 use crate::error::{Result, VdkError};
 use crate::format;
-use bytes::{Bytes, BytesMut};
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
-use super::{
-    types::*,
-    parser::TSPacketParser
-};
+use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
 #[derive(Clone)]
 struct TSCodecData {
@@ -23,15 +20,15 @@ impl CodecData for TSCodecData {
     fn codec_type(&self) -> CodecType {
         self.codec_type
     }
-    
+
     fn width(&self) -> Option<u32> {
         self.width
     }
-    
+
     fn height(&self) -> Option<u32> {
         self.height
     }
-    
+
     fn extra_data(&self) -> Option<&[u8]> {
         self.extra_data.as_deref()
     }
@@ -61,7 +58,7 @@ impl<R: AsyncRead + Unpin + Send> TSDemuxer<R> {
     async fn read_ts_packet(&mut self) -> Result<Option<Packet>> {
         let mut data = BytesMut::with_capacity(TS_PACKET_SIZE);
         data.resize(TS_PACKET_SIZE, 0);
-        
+
         // Read TS packet
         if let Err(e) = self.reader.read_exact(&mut data).await {
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -72,10 +69,9 @@ impl<R: AsyncRead + Unpin + Send> TSDemuxer<R> {
 
         let header = self.parser.parse_header(&data)?;
         let adaptation_field = self.parser.parse_adaptation_field(&data, TS_HEADER_SIZE)?;
-        
-        let payload_offset = TS_HEADER_SIZE + 
-            adaptation_field.map(|f| f.length + 1).unwrap_or(0);
-        
+
+        let payload_offset = TS_HEADER_SIZE + adaptation_field.map(|f| f.length + 1).unwrap_or(0);
+
         let payload = &data[payload_offset..];
 
         match header.pid {
@@ -158,16 +154,20 @@ impl<R: AsyncRead + Unpin + Send> format::Demuxer for TSDemuxer<R> {
     }
 
     async fn streams(&mut self) -> Result<Vec<Box<dyn av::CodecData>>> {
-        Ok(self.streams.iter().map(|s| {
-            // Create a new TSCodecData from the Arc'd one
-            let codec = TSCodecData {
-                codec_type: s.codec_type,
-                width: s.width,
-                height: s.height,
-                extra_data: s.extra_data.clone(),
-            };
-            // Box it as a CodecData trait object
-            Box::new(codec) as Box<dyn av::CodecData>
-        }).collect())
+        Ok(self
+            .streams
+            .iter()
+            .map(|s| {
+                // Create a new TSCodecData from the Arc'd one
+                let codec = TSCodecData {
+                    codec_type: s.codec_type,
+                    width: s.width,
+                    height: s.height,
+                    extra_data: s.extra_data.clone(),
+                };
+                // Box it as a CodecData trait object
+                Box::new(codec) as Box<dyn av::CodecData>
+            })
+            .collect())
     }
 }

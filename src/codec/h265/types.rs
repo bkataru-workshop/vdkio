@@ -50,10 +50,7 @@ impl NALUnit {
     pub fn new(data: Bytes) -> Self {
         let nal_type_byte = (data[0] >> 1) & 0x3F;
         let nal_type = NALUnitType::from_u8(nal_type_byte);
-        NALUnit {
-            nal_type,
-            data,
-        }
+        NALUnit { nal_type, data }
     }
 }
 

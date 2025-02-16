@@ -1,8 +1,8 @@
 use std::error::Error;
-use tokio::fs::File;
-use vdkio::format::aac::{AACMuxer, AACDemuxer};
-use vdkio::av::{Muxer, Demuxer, Packet};
 use std::time::Duration;
+use tokio::fs::File;
+use vdkio::av::{Demuxer, Muxer, Packet};
+use vdkio::format::aac::{AACDemuxer, AACMuxer};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

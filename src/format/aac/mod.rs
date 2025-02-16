@@ -1,10 +1,10 @@
+use crate::av::{CodecDataExt, Demuxer as AvDemuxer, Muxer as AvMuxer, Packet};
+use crate::codec::aac::{AACConfig, AACParser, ADTSHeader};
+use crate::{Result, VdkError};
+use async_trait::async_trait;
 use std::io;
 use std::time::Duration;
-use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt, BufWriter};
-use crate::av::{CodecData, CodecDataExt, Demuxer as AvDemuxer, Muxer as AvMuxer, Packet};
-use crate::codec::aac::{AACParser, AACConfig, ADTSHeader};
-use crate::{Result, VdkError};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
 /// AAC format muxer for writing AAC files with ADTS headers
 pub struct AACMuxer<W: AsyncWrite + Unpin + Send> {
@@ -25,7 +25,9 @@ impl<W: AsyncWrite + Unpin + Send> AACMuxer<W> {
 impl<W: AsyncWrite + Unpin + Send> AvMuxer for AACMuxer<W> {
     async fn write_header(&mut self, streams: &[Box<dyn CodecDataExt>]) -> crate::Result<()> {
         if streams.len() != 1 {
-            return Err(VdkError::InvalidData("AAC muxer requires exactly one stream".to_string()));
+            return Err(VdkError::InvalidData(
+                "AAC muxer requires exactly one stream".to_string(),
+            ));
         }
         // Configuration will be extracted from first packet's ADTS header
         Ok(())
@@ -33,7 +35,7 @@ impl<W: AsyncWrite + Unpin + Send> AvMuxer for AACMuxer<W> {
 
     async fn write_packet(&mut self, packet: Packet) -> crate::Result<()> {
         let mut parser = AACParser::new();
-        
+
         if self.config.is_none() {
             // Try to extract config from ADTS header
             if let Ok(header) = parser.parse_adts_header(&packet.data[..7]) {
@@ -44,7 +46,9 @@ impl<W: AsyncWrite + Unpin + Send> AvMuxer for AACMuxer<W> {
                     frame_length: 1024, // AAC default frame length
                 });
             } else {
-                return Err(VdkError::InvalidData("No AAC configuration available".to_string()));
+                return Err(VdkError::InvalidData(
+                    "No AAC configuration available".to_string(),
+                ));
             }
         }
 
@@ -64,7 +68,7 @@ impl<W: AsyncWrite + Unpin + Send> AvMuxer for AACMuxer<W> {
                 copyright_id_bit: false,
                 copyright_id_start: false,
                 frame_length: (packet.data.len() + 7) as u16, // Include ADTS header length
-                buffer_fullness: 0x7FF, // Variable bit rate
+                buffer_fullness: 0x7FF,                       // Variable bit rate
                 number_of_raw_blocks: 0,
             };
 
@@ -74,7 +78,7 @@ impl<W: AsyncWrite + Unpin + Send> AvMuxer for AACMuxer<W> {
 
         // Write AAC frame data
         self.writer.write_all(&packet.data).await?;
-        
+
         Ok(())
     }
 
@@ -132,7 +136,9 @@ impl<R: AsyncRead + Unpin + Send> AvDemuxer for AACDemuxer<R> {
                 if let Ok(header) = self.parser.parse_adts_header(&header_buf) {
                     let frame_length = header.frame_length as usize;
                     if frame_length < 7 {
-                        return Err(VdkError::InvalidData("Invalid frame length in ADTS header".to_string()));
+                        return Err(VdkError::InvalidData(
+                            "Invalid frame length in ADTS header".to_string(),
+                        ));
                     }
                     let mut frame_data = vec![0u8; frame_length - 7];
                     self.reader.read_exact(&mut frame_data).await?;
@@ -155,7 +161,8 @@ impl<R: AsyncRead + Unpin + Send> AvDemuxer for AACDemuxer<R> {
                     };
 
                     // Calculate duration for 1024 samples
-                    let duration = Duration::from_nanos((1_024_000_000_000u64) / sample_rate as u64);
+                    let duration =
+                        Duration::from_nanos((1_024_000_000_000u64) / sample_rate as u64);
                     self.current_pts += duration.as_nanos() as i64;
 
                     Ok(Packet::new(frame_data)
@@ -179,13 +186,14 @@ impl<R: AsyncRead + Unpin + Send> AvDemuxer for AACDemuxer<R> {
 mod tests {
     use super::*;
     use tokio::io::BufWriter;
-    
+    use crate::av::CodecData;
+
     #[tokio::test]
     async fn test_aac_muxer() {
         let buf = Vec::new();
         let writer = BufWriter::new(buf);
         let mut muxer = AACMuxer::new(writer);
-        
+
         // Create test codec data
         #[derive(Clone)]
         struct TestAACCodec;
@@ -206,20 +214,19 @@ mod tests {
 
         // Write header with one AAC stream
         let streams = vec![
-            // TestAACCodec implements Clone and CodecData, so it gets CodecDataExt 
+            // TestAACCodec implements Clone and CodecData, so it gets CodecDataExt
             // through the blanket implementation
-            Box::new(TestAACCodec)
- as Box<dyn CodecDataExt>
+            Box::new(TestAACCodec) as Box<dyn CodecDataExt>,
         ];
         muxer.write_header(&streams).await.unwrap();
-        
+
         // Create a test packet with ADTS header
         let adts_header = ADTSHeader {
             sync_word: 0xFFF,
             id: 0,
             layer: 0,
             protection_absent: true,
-            profile: 1.into(), // AAC-LC
+            profile: 1.into(),    // AAC-LC
             sample_rate_index: 4, // 44.1kHz
             private_bit: false,
             channel_configuration: 2, // Stereo
@@ -231,16 +238,16 @@ mod tests {
             buffer_fullness: 0x7FF,
             number_of_raw_blocks: 0,
         };
-        
+
         let header_bytes = adts_header.to_bytes().unwrap();
         let mut data = header_bytes.to_vec();
         data.extend_from_slice(&[0u8; 1024]); // Dummy frame data
-        
+
         let packet = Packet::new(data)
             .with_pts(0)
             .with_duration(Duration::from_millis(23)) // ~1024 samples at 44.1kHz
             .with_key_flag(true);
-        
+
         muxer.write_packet(packet).await.unwrap();
         muxer.write_trailer().await.unwrap();
     }

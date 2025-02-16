@@ -1,8 +1,8 @@
-pub mod error;
 pub mod av;
-pub mod utils;
 pub mod codec;
+pub mod error;
 pub mod format;
+pub mod utils;
 
 pub use error::{Result, VdkError};
 
