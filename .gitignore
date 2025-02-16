@@ -2,3 +2,6 @@
 .aider*
 
 .env
+
+output/
+test_output/

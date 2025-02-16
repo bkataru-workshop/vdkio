@@ -2,6 +2,7 @@ use bytes::Bytes;
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs::File;
+use tokio::io::BufWriter;
 use tokio::time;
 use vdkio::av::transcode::{
     StreamCodecData, TranscodeOptions, Transcoder, VideoDecoder, VideoEncoder,
@@ -12,6 +13,8 @@ use vdkio::error::VdkError;
 use vdkio::format::rtsp::{RTSPClient, RTSPSetupOptions};
 use vdkio::format::ts::{HLSSegmenter, HLSVariant, TSMuxer};
 use vdkio::format::Muxer;
+
+const RTSP_URL: &str = "rtsp://example.com/stream";
 
 #[allow(dead_code)]
 struct HLSVariantConfig {
@@ -113,11 +116,27 @@ async fn setup_rtsp_client(
     let mut codecs = Vec::new();
 
     // Setup each media stream
-    for media in &media_descriptions {
+    for (i, media) in media_descriptions.iter().enumerate() {
         if (media.media_type == "video" && options.enable_video)
             || (media.media_type == "audio" && options.enable_audio)
         {
-            client.setup(media).await?;
+            // Create a stream with TCP transport
+            use tokio::sync::mpsc;
+            use vdkio::format::rtsp::{MediaStream, TransportInfo};
+            
+            let (tx, _rx) = mpsc::channel(100);
+            let stream = MediaStream::new(
+                &media.media_type,
+                &media.get_attribute("control")
+                    .map(String::as_str)
+                    .unwrap_or("*"),
+                TransportInfo::new_rtp_avp((0, 0)), // Ports not used in TCP mode
+                tx,
+            )
+            .with_tcp_transport((i as u16 * 2, i as u16 * 2 + 1));
+
+            println!("Setting up {} stream with transport: {}", media.media_type, stream.get_transport_str());
+            client.setup_with_stream(stream).await?;
 
             let codec_type = match &media.media_type[..] {
                 "video" => CodecType::H264,
@@ -146,7 +165,8 @@ async fn setup_rtsp_client(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    let rtsp_url = std::env::var("RTSP_URL").expect("RTSP_URL environment variable must be set");
+    // let rtsp_url = std::env::var("RTSP_URL").expect("RTSP_URL environment variable must be set");
+    let rtsp_url = RTSP_URL;
     let hls_output_dir = Path::new("output/hls");
 
     // Create output directory
@@ -165,9 +185,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let mut variant_configs = Vec::new();
-    for (name, bandwidth, resolution, fps) in variants {
+    for (name, bandwidth, resolution, fps) in &variants {
         let config =
-            setup_variant(name, bandwidth, resolution, fps, hls_output_dir, &codecs).await?;
+            setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, &codecs).await?;
         variant_configs.push(config);
     }
 
@@ -256,15 +276,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(_) => {
                     println!("Packet receive timeout, attempting reconnect");
-                    if client.reconnect().await? {
-                        client.play().await?;
-                        if let Some(new_rx) = client.get_packet_receiver() {
-                            rx = new_rx;
-                            continue;
+                    
+                    // First, try to clean up existing resources
+                    if let Err(e) = client.teardown().await {
+                        println!("Warning: Error during teardown: {}", e);
+                    }
+                    
+                    // Re-create HLS variant configs and RTSP client
+                    variant_configs.clear();
+                    
+                    let setup_options = RTSPSetupOptions::new().with_video(true).with_audio(true);
+                    match setup_rtsp_client(&rtsp_url, setup_options).await {
+                        Ok((mut new_client, codecs)) => {
+                            println!("Reconnection successful");
+                            client = new_client;
+
+                            // Re-create variant configs
+                            let mut setup_success = true;
+                            for (name, bandwidth, resolution, fps) in variants.iter() {
+                                match setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, &codecs).await {
+                                    Ok(config) => {
+                                        variant_configs.push(config);
+                                    },
+                                    Err(e) => {
+                                        println!("Error re-setting up variant {}: {}", name, e);
+                                        setup_success = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if !setup_success {
+                                break;
+                            }
+                            
+                            // Re-create master playlist file
+                            let master_playlist_path = hls_output_dir.join("playlist.m3u8");
+                            match File::create(&master_playlist_path).await {
+                                Ok(mut master_playlist_file) => {
+                                    if let Err(e) = variant_configs[0].segmenter.write_master_playlist(&mut master_playlist_file).await {
+                                        println!("Error re-writing master playlist: {}", e);
+                                        break;
+                                    }
+                                },
+                                Err(e) => {
+                                    println!("Error creating master playlist: {}", e);
+                                    break;
+                                }
+                            }
+
+                            match client.play().await {
+                                Ok(_) => {
+                                    if let Some(new_rx) = client.get_packet_receiver() {
+                                        rx = new_rx;
+                                        println!("Successfully restarted playback and got new packet receiver");
+                                        continue;
+                                    } else {
+                                        println!("Failed to get packet receiver after reconnect");
+                                        break;
+                                    }
+                                },
+                                Err(e) => {
+                                    println!("Error restarting playback after reconnect: {}", e);
+                                    break;
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            println!("Reconnection failed: {}", e);
+                            break;
                         }
                     }
-                    println!("Reconnection failed, ending stream");
-                    break;
                 }
             }
         }

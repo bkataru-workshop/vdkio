@@ -8,14 +8,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create RTSP client
     let url = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "rtsp://example.com/stream".to_string());
+        .unwrap_or_else(|| "rtsp://example.com:3000/cam/realmonitor".to_string());
 
     println!("Connecting to {}", url);
     let mut client = RTSPClient::new(&url)?;
 
     // Connect to server
-    //client.connect().await?;
-    //println!("Connected successfully");
+    client.connect().await?;
+    println!("Connected successfully");
 
     // Get stream information
     let sdp = client.describe().await?;
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if let Some(control) = video.get_attribute("control") {
             println!("  Control: {}", control);
         }
-        //client.setup(video).await?;
+        client.setup(video).await?;
         println!("Video stream setup complete");
     }
 
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if let Some(control) = audio.get_attribute("control") {
             println!("  Control: {}", control);
         }
-        //client.setup(audio).await?;
+        client.setup(audio).await?;
         println!("Audio stream setup complete");
     }
 
