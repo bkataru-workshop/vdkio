@@ -112,6 +112,7 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
 #[async_trait::async_trait]
 impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
     async fn write_header(&mut self, streams: &[Box<dyn av::CodecData>]) -> Result<()> {
+        println!("Writing TS header with {} streams", streams.len());
         // Initialize PAT
         self.pat.entries.clear();
         self.pat.entries.push(PATEntry {
@@ -151,7 +152,7 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
         }
 
         // Write PAT
-        let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
+        let mut pat_buf = BytesMut::with_capacity(TS_PACKET_SIZE);
 
         // PAT header
         let header = TSHeader {
@@ -165,166 +166,184 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
             contains_payload: true,
             continuity_counter: 0,
         };
-        header.write_to(&mut buf)?;
+        header.write_to(&mut pat_buf)?;
 
         // Write PAT content
-        buf.put_u8(0); // Pointer field
-        buf.put_u8(TABLE_ID_PAT);
+        pat_buf.put_u8(0); // Pointer field
+        pat_buf.put_u8(TABLE_ID_PAT);
 
         let mut section = BytesMut::new();
         self.pat.write_to(&mut section)?;
 
         let section_length = section.len() + 5 + 4;
-        buf.put_u16((0xB000 | section_length as u16) & 0x3FF);
-        buf.put_u16(1); // Transport stream ID
-        buf.put_u8(0xC1); // Version 0, current
+        pat_buf.put_u16((0xB000 | section_length as u16) & 0x3FF);
+        pat_buf.put_u16(1); // Transport stream ID
+        pat_buf.put_u8(0xC1); // Version 0, current
 
-        buf.put_u8(0); // Section number
-        buf.put_u8(0); // Last section number
+        pat_buf.put_u8(0); // Section number
+        pat_buf.put_u8(0); // Last section number
 
-        buf.extend_from_slice(&section);
+        pat_buf.extend_from_slice(&section);
 
         // Calculate and write CRC
-        let crc = self.crc.calculate(&buf[5..5 + section_length - 4].to_vec());
-        buf.put_u32(crc);
+        let crc = self.crc.calculate(&pat_buf[5..5 + section_length - 4].to_vec());
+        pat_buf.put_u32(crc);
 
         // Stuffing
-        while buf.len() < TS_PACKET_SIZE {
-            buf.put_u8(0xFF);
+        while pat_buf.len() < TS_PACKET_SIZE {
+            pat_buf.put_u8(0xFF);
         }
 
-        self.stream_writer.write_all(&buf).await?;
+        self.stream_writer.write_all(&pat_buf).await?;
+
+        // Write PMT
+        let mut pmt_buf = BytesMut::with_capacity(TS_PACKET_SIZE);
+
+        // PMT header
+        let header = TSHeader {
+            sync_byte: 0x47,
+            transport_error: false,
+            payload_unit_start: true,
+            transport_priority: false,
+            pid: PID_PMT,
+            scrambling_control: 0,
+            adaptation_field_exists: false,
+            contains_payload: true,
+            continuity_counter: 0,
+        };
+        header.write_to(&mut pmt_buf)?;
+
+        // Write PMT content
+        pmt_buf.put_u8(0); // Pointer field
+        pmt_buf.put_u8(TABLE_ID_PMT);
+
+        let mut section = BytesMut::new();
+        self.pmt.write_to(&mut section)?;
+
+        let section_length = section.len() + 4 + 4; // +4 for program number and version, +4 for CRC
+        pmt_buf.put_u16((0xB000 | section_length as u16) & 0x3FF);
+        pmt_buf.put_u16(1); // Program number
+        pmt_buf.put_u8(0xC1); // Version 0, current
+
+        pmt_buf.put_u8(0); // Section number
+        pmt_buf.put_u8(0); // Last section number
+
+        pmt_buf.extend_from_slice(&section);
+
+        // Calculate and write CRC
+        let crc = self.crc.calculate(&pmt_buf[5..5 + section_length - 4].to_vec());
+        pmt_buf.put_u32(crc);
+
+        // Stuffing
+        while pmt_buf.len() < TS_PACKET_SIZE {
+            pmt_buf.put_u8(0xFF);
+        }
+
+        println!("  Writing PMT packet, first byte: 0x{:02x}", pmt_buf[0]);
+        self.stream_writer.write_all(&pmt_buf).await?;
         self.stream_writer.flush().await?;
 
         Ok(())
     }
 
     async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
-        let mut buf = BytesMut::with_capacity(TS_PACKET_SIZE);
+        // Split packet data into TS packets
+        let payload = &packet.data;
+        let mut offset = 0;
+        
+        println!("Writing packet: stream_index={}, payload_len={}, pts={:?}",
+                packet.stream_index, payload.len(), packet.pts);
+        
+        while offset < payload.len() {
+            println!("  Writing TS packet at offset {}", offset);
+            let mut ts_packet = BytesMut::with_capacity(TS_PACKET_SIZE);
+                
+            // Calculate sizes
+            let header_size = 4;
+            let adaptation_field_size = if offset == 0 { 1 } else { 0 }; // Only first packet has adaptation field
+            let max_payload_size = TS_PACKET_SIZE - header_size - adaptation_field_size;
+            let payload_size = std::cmp::min(max_payload_size, payload.len() - offset);
+            let stuffing_size = TS_PACKET_SIZE - header_size - adaptation_field_size - payload_size;
+                
+            println!("    Sizes: header={}, adapt={}, payload={}, stuff={}",
+                    header_size, adaptation_field_size, payload_size, stuffing_size);
 
+            // Write TS header
+            let header = TSHeader {
+                sync_byte: 0x47,
+                transport_error: false,
+                payload_unit_start: offset == 0, // Only first packet has payload_unit_start
+                transport_priority: false,
+                pid: self.get_stream_pid(packet.stream_index),
+                scrambling_control: 0,
+                adaptation_field_exists: adaptation_field_size > 0 || stuffing_size > 0,
+                contains_payload: true,
+                continuity_counter: self.get_next_continuity_counter(packet.stream_index),
+            };
+            header.write_to(&mut ts_packet)?;
+                
+            // Verify sync byte was written correctly
+            if ts_packet[0] != 0x47 {
+                println!("    WARNING: First byte is not 0x47, got 0x{:02x}", ts_packet[0]);
+            }
+
+            // Write adaptation field if needed
+            if header.adaptation_field_exists {
+                ts_packet.put_u8((adaptation_field_size + stuffing_size) as u8); // Adaptation field length
+                if adaptation_field_size > 0 {
+                    ts_packet.put_u8(0); // No flags
+                }
+                // Add stuffing
+                for _ in 0..stuffing_size {
+                    ts_packet.put_u8(0xFF);
+                }
+            }
+                
+            // Write payload
+            ts_packet.extend_from_slice(&payload[offset..offset + payload_size]);
+                
+            // Write packet
+            println!("    Writing TS packet, first byte: 0x{:02x}", ts_packet[0]);
+            self.stream_writer.write_all(&ts_packet).await?;
+            offset += payload_size;
+        }
+            
+        // Update PCR if needed
         if let Some(pts) = packet.pts {
             self.update_pcr(Some(Duration::from_millis(pts as u64)));
         }
-
-        let need_pcr = self.needs_pcr() && packet.stream_index == 0;
-        let is_pcr_pid = self.get_stream_pid(packet.stream_index) == self.pmt.pcr_pid;
-
-        // Calculate adaptation field size
-        let mut adaptation_size = if need_pcr && is_pcr_pid { 8 } else { 0 };
-        if self.stream_discontinuity {
-            adaptation_size += 1;
-        }
-
-        let payload_size = packet.data.len();
-        let header_size = 4;
-        let stuffing_needed = if payload_size + header_size + adaptation_size < TS_PACKET_SIZE {
-            TS_PACKET_SIZE - (payload_size + header_size + adaptation_size)
-        } else {
-            0
-        };
-
-        // Write TS header
-        let header = TSHeader {
-            sync_byte: 0x47,
-            transport_error: false,
-            payload_unit_start: true,
-            transport_priority: false,
-            pid: self.get_stream_pid(packet.stream_index),
-            scrambling_control: 0,
-            adaptation_field_exists: need_pcr || stuffing_needed > 0 || self.stream_discontinuity,
-            contains_payload: true,
-            continuity_counter: self.get_next_continuity_counter(packet.stream_index),
-        };
-        header.write_to(&mut buf)?;
-
-        // Write adaptation field if needed
-        if header.adaptation_field_exists {
-            let mut adaptation_length = stuffing_needed;
-            if need_pcr {
-                adaptation_length += 7;
-            }
-            if self.stream_discontinuity {
-                adaptation_length += 1;
-            }
-
-            // Adaptation field length
-            buf.put_u8(adaptation_length as u8);
-
-            // Adaptation flags
-            let mut flags = 0u8;
-            if need_pcr {
-                flags |= 0x10; // PCR flag
-            }
-            if self.stream_discontinuity {
-                flags |= 0x80; // Discontinuity indicator
-            }
-            if stuffing_needed > 0 {
-                flags |= 0x20; // Random access indicator
-            }
-            buf.put_u8(flags);
-
-            // Write PCR if needed
-            if need_pcr {
-                let pcr = time_to_pcr(self.current_pcr);
-                buf.extend_from_slice(&((pcr >> 16) as u32).to_be_bytes());
-                buf.extend_from_slice(&((pcr & 0xFFFF) as u16).to_be_bytes());
-                self.last_pcr = Some(self.current_pcr);
-                self.last_pcr_write = self.current_pcr;
-            }
-
-            // Stuffing bytes
-            for _ in 0..stuffing_needed {
-                buf.put_u8(0xFF);
-            }
-        }
-
-        // Write payload
-        buf.extend_from_slice(&packet.data);
-
-        if let Some(segmenter) = &mut self.hls_segmenter {
-            let current_time = Duration::from_millis(packet.pts.unwrap_or(0) as u64); // Use packet PTS as time
-            if segmenter.should_start_new_segment(current_time) {
-                if let Err(e) = segmenter.finish_segment(current_time).await {
-                    println!("Error finishing segment: {}", e); // Log error but continue
-                }
-                if let Err(e) = segmenter.start_segment(current_time).await {
-                    return Err(VdkError::Codec(format!("Failed to start segment: {}", e)));
-                }
-            }
-        }
-
-        self.stream_writer.write_all(&buf).await?;
+            
         self.stream_writer.flush().await?;
         Ok(())
     }
 
-    
-        async fn write_trailer(&mut self) -> Result<()> {
-            if let Some(segmenter) = &mut self.hls_segmenter {
-                let current_time = self.current_pcr; // Use current PCR time for segment end
-                if let Err(e) = segmenter.finish_segment(current_time).await {
-                    println!("Error finishing last segment: {}", e); // Log error but continue
-                }
-    
-                let playlist_path = segmenter.get_output_dir().join("playlist.m3u8");
-                let playlist_file = File::create(playlist_path).await?;
-                let mut playlist_writer = io::BufWriter::new(playlist_file);
-    
-                if let Err(e) = segmenter.write_playlist(&mut playlist_writer).await {
-                    println!("Error writing playlist: {}", e); // Log error but continue
-                }
-                if let Err(e) = segmenter.write_master_playlist(&mut playlist_writer).await {
-                    println!("Error writing master playlist: {}", e); // Log error but continue
-                }
-    
-                if let Err(e) = playlist_writer.flush().await {
-                    println!("Error flushing playlist writer: {}", e); // Log error but continue
-                }
+    async fn write_trailer(&mut self) -> Result<()> {
+        if let Some(segmenter) = &mut self.hls_segmenter {
+            let current_time = self.current_pcr; // Use current PCR time for segment end
+            if let Err(e) = segmenter.finish_segment(current_time).await {
+                println!("Error finishing last segment: {}", e); // Log error but continue
             }
-    
-            self.stream_writer.flush().await?;
-            Ok(())
+
+            let playlist_path = segmenter.get_output_dir().join("playlist.m3u8");
+            let playlist_file = File::create(playlist_path).await?;
+            let mut playlist_writer = io::BufWriter::new(playlist_file);
+
+            if let Err(e) = segmenter.write_playlist(&mut playlist_writer).await {
+                println!("Error writing playlist: {}", e); // Log error but continue
+            }
+            if let Err(e) = segmenter.write_master_playlist(&mut playlist_writer).await {
+                println!("Error writing master playlist: {}", e); // Log error but continue
+            }
+
+            if let Err(e) = playlist_writer.flush().await {
+                println!("Error flushing playlist writer: {}", e); // Log error but continue
+            }
         }
+
+        self.stream_writer.flush().await?;
+        Ok(())
+    }
+
     async fn flush(&mut self) -> Result<()> {
         self.stream_writer.flush().await?;
         Ok(())
@@ -334,7 +353,7 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-   use std::io::Cursor;
+    use std::io::Cursor;
     use tokio::runtime::Runtime;
 
     #[derive(Clone)]
