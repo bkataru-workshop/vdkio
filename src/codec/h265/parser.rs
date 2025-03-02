@@ -5,15 +5,25 @@ use log;
 use super::types::{NALUnit, NALUnitType, PPSInfo, ProfileTierLevel, SPSInfo, VPSInfo};
 use crate::utils::bits::BitReader;
 
+/// H.265/HEVC bitstream parser for extracting parameter sets and frame information
+///
+/// Parses Network Abstraction Layer (NAL) units from H.265 bitstreams and maintains
+/// the state of Video Parameter Sets (VPS), Sequence Parameter Sets (SPS), and
+/// Picture Parameter Sets (PPS).
 #[derive(Debug)]
 pub struct H265Parser {
+    /// Currently active Sequence Parameter Set
     sps: Option<SPSInfo>,
+    /// Currently active Picture Parameter Set
     pps: Option<PPSInfo>,
+    /// Currently active Video Parameter Set
     vps: Option<VPSInfo>,
+    /// Internal buffer for removing emulation prevention bytes
     buffer: BytesMut,
 }
 
 impl H265Parser {
+    /// Creates a new H.265 parser with empty parameter set state
     pub fn new() -> Self {
         Self {
             sps: None,
@@ -23,6 +33,19 @@ impl H265Parser {
         }
     }
 
+    /// Parses a raw NAL unit byte slice and extracts NAL unit type and payload
+    ///
+    /// This method also handles emulation prevention byte removal and updates
+    /// the parser state with VPS, SPS, or PPS if the NAL unit is a parameter set.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Byte slice containing the raw NAL unit data (including start code)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(NALUnit)` - Parsed NAL unit with type and payload
+    /// * `Err(_)` - If parsing fails
     pub fn parse_nalu(&mut self, data: &[u8]) -> Result<NALUnit> {
         let data = self.remove_emulation_prevention(data);
         let data = Bytes::from(data);
@@ -45,6 +68,19 @@ impl H265Parser {
         Ok(nalu)
     }
 
+    /// Removes emulation prevention bytes from the NAL unit data
+    ///
+    /// In H.265 bitstreams, emulation prevention bytes (0x03) are inserted
+    /// after every 0x0000 sequence to prevent start code confusion. This method
+    /// removes these bytes to recover the original NAL unit payload.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Byte slice containing NAL unit data with emulation prevention bytes
+    ///
+    /// # Returns
+    ///
+    /// Byte vector with emulation prevention bytes removed
     pub fn remove_emulation_prevention(&mut self, data: &[u8]) -> Vec<u8> {
         self.buffer.clear();
         let mut i = 0;
@@ -63,6 +99,19 @@ impl H265Parser {
         self.buffer.to_vec()
     }
 
+    /// Checks if a NAL unit is a keyframe (IDR, CRA, or IdrNlp)
+    ///
+    /// In H.265, keyframes are essential for starting points in a video stream and
+    /// allow for seeking and random access. This method checks the NAL unit type
+    /// to determine if it's a keyframe.
+    ///
+    /// # Arguments
+    ///
+    /// * `nalu` - NAL unit to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if NAL unit is a keyframe, `false` otherwise
     pub fn is_keyframe(&self, nalu: &NALUnit) -> bool {
         matches!(
             nalu.nal_type,
@@ -70,6 +119,21 @@ impl H265Parser {
         )
     }
 
+    /// Parses profile_tier_level syntax structure as defined in H.265 specification
+    ///
+    /// This structure is part of VPS, SPS, and PPS and contains profile, tier, and
+    /// level information used for decoder capability negotiation and stream decoding
+    /// complexity signaling.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - BitReader positioned at the start of profile_tier_level data
+    /// * `profile_present_flag` - Indicates if profile info is present in bitstream
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(ProfileTierLevel)` - Parsed profile tier level structure
+    /// * `Err(_)` - If bitstream parsing fails
     fn parse_profile_tier_level(
         &mut self,
         reader: &mut BitReader,

@@ -2,9 +2,25 @@
 name = "vdkio"
 version = "0.1.0"
 edition = "2021"
-description = "Video Development Kit - A set of libraries for building streaming services"
+description = "A high-performance video toolkit for building streaming applications in Rust, with focus on RTSP, HLS, and codec support including H.264/H.265"
 authors = ["Rust VDK Contributors"]
 license = "MIT"
+repository = "https://github.com/rust-vdk/vdkio"
+documentation = "https://docs.rs/vdkio"
+readme = "README.md"
+homepage = "https://github.com/rust-vdk/vdkio"
+keywords = ["video", "streaming", "rtsp", "hls", "h264"]
+categories = ["multimedia", "multimedia::video", "network-programming", "api-bindings"]
+exclude = [
+    "output/*",
+    "test_output/*",
+    "*.aac",
+    "*.ts"
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 tokio = { version = "1", features = ["full", "test-util", "macros", "rt-multi-thread"] }

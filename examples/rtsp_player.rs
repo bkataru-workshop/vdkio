@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 use tokio::time::sleep;
+use vdkio::config;
 use vdkio::format::rtsp::RTSPClient;
 
 #[tokio::main]
@@ -8,7 +9,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create RTSP client
     let url = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "rtsp://example.com:3000/cam/realmonitor".to_string());
+        .unwrap_or_else(|| config::get_rtsp_url());
 
     println!("Connecting to {}", url);
     let mut client = RTSPClient::new(&url)?;

@@ -3,25 +3,47 @@ use crate::error::Result;
 use bytes::{BufMut, BytesMut};
 use std::time::Duration;
 
+/// Packetized Elementary Stream (PES) header structure
+///
+/// Contains fields defined in the MPEG-TS specification for PES headers,
+/// including timing information and various control flags.
 #[derive(Debug, Clone)]
 pub struct PESHeader {
-    pub start_code_prefix: u32, // Always 0x000001
+    /// Start code prefix, always 0x000001 for PES packets
+    pub start_code_prefix: u32,
+    /// Stream identifier indicating content type (video/audio/etc.)
     pub stream_id: u8,
+    /// Length of the PES packet (header + payload)
     pub packet_length: u16,
+    /// Control field for scrambling mode
     pub scrambling_control: u8,
+    /// Priority flag for the packet
     pub priority: bool,
+    /// Data alignment indicator
     pub data_alignment: bool,
+    /// Copyright indicator
     pub copyright: bool,
+    /// Original/copy indicator
     pub original: bool,
+    /// Flags indicating presence of PTS/DTS fields
     pub pts_dts_flags: u8,
+    /// ESCR (Extended System Clock Reference) flag
     pub escr_flag: bool,
+    /// Elementary Stream rate flag
     pub es_rate_flag: bool,
+    /// DSM trick mode flag
     pub dsm_trick_mode_flag: bool,
+    /// Additional copy info flag
     pub additional_copy_info_flag: bool,
+    /// CRC flag
     pub crc_flag: bool,
+    /// Extension flag
     pub extension_flag: bool,
+    /// Length of the header data following this field
     pub header_data_length: u8,
+    /// Presentation Time Stamp (33 bits)
     pub pts: Option<u64>,
+    /// Decoding Time Stamp (33 bits)
     pub dts: Option<u64>,
 }
 
@@ -51,6 +73,10 @@ impl Default for PESHeader {
 }
 
 impl PESHeader {
+    /// Creates a new PES header with a specific stream ID.
+    ///
+    /// # Arguments
+    /// * `stream_id` - The stream_id for this PES header.
     pub fn new(stream_id: u8) -> Self {
         Self {
             stream_id,
@@ -58,18 +84,41 @@ impl PESHeader {
         }
     }
 
+    /// Sets the Presentation Time Stamp (PTS) for the PES header.
+    ///
+    /// # Arguments
+    /// * `pts` - The PTS Duration to set.
+    ///
+    /// # Returns
+    /// The modified PESHeader instance.
     pub fn with_pts(mut self, pts: Duration) -> Self {
         self.pts = Some(time_to_pts(pts));
         self.pts_dts_flags |= 0x80;
         self
     }
 
+    /// Sets the Decoding Time Stamp (DTS) for the PES header.
+    ///
+    /// # Arguments
+    /// * `dts` - The DTS Duration to set.
+    ///
+    /// # Returns
+    /// The modified PESHeader instance.
     pub fn with_dts(mut self, dts: Duration) -> Self {
         self.dts = Some(time_to_pts(dts));
         self.pts_dts_flags |= 0x40;
         self
     }
 
+    /// Writes the PES header to a BytesMut buffer.
+    ///
+    /// This method encodes all header fields into the buffer according to MPEG-TS PES syntax.
+    ///
+    /// # Arguments
+    /// * `buf` - The BytesMut buffer to write the header to.
+    ///
+    /// # Returns
+    /// `Ok(())` if writing is successful, `Err` otherwise.
     pub fn write_to(&self, buf: &mut BytesMut) -> Result<()> {
         // Start code prefix (3 bytes) - manually writing 24 bits
         buf.put_u8((self.start_code_prefix >> 16) as u8);
@@ -140,34 +189,76 @@ impl PESHeader {
     }
 }
 
+/// Represents a complete Packetized Elementary Stream (PES) packet.
+///
+/// A PES packet consists of a header and payload data. It's used to carry
+/// compressed video, audio, or other data in an MPEG transport stream.
 #[derive(Debug)]
 pub struct PESPacket {
+    /// PES header containing metadata and flags
     pub header: PESHeader,
+    /// Actual payload data of the PES packet
     pub payload: Vec<u8>,
 }
 
 impl PESPacket {
+    /// Creates a new PES packet with the specified stream ID and payload data.
+    ///
+    /// # Arguments
+    /// * `stream_id` - The stream identifier (e.g., video or audio)
+    /// * `payload` - The actual packet payload data
+    ///
+    /// # Returns
+    /// A new PESPacket instance
     pub fn new(stream_id: u8, payload: Vec<u8>) -> Self {
         let header = PESHeader::new(stream_id);
         Self { header, payload }
     }
 
+    /// Sets the Presentation Time Stamp (PTS) for the PES packet.
+    ///
+    /// # Arguments
+    /// * `pts` - Presentation Time Stamp for the PES packet
+    ///
+    /// # Returns
+    /// The modified PESPacket instance
     pub fn with_pts(mut self, pts: Duration) -> Self {
         self.header = self.header.with_pts(pts);
         self
     }
 
+    /// Sets the Decoding Time Stamp (DTS) for the PES packet.
+    ///
+    /// # Arguments
+    /// * `dts` - Decoding Time Stamp for the PES packet
+    ///
+    /// # Returns
+    /// The modified PESPacket instance
     pub fn with_dts(mut self, dts: Duration) -> Self {
         self.header = self.header.with_dts(dts);
         self
     }
 
+    /// Writes the complete PES packet to a BytesMut buffer.
+    ///
+    /// # Arguments
+    /// * `buf` - The BytesMut buffer to write the PES packet to
+    ///
+    /// # Returns
+    /// `Ok(())` if writing is successful, `Err` otherwise
     pub fn write_to(&self, buf: &mut BytesMut) -> Result<()> {
         self.header.write_to(buf)?;
         buf.extend_from_slice(&self.payload);
         Ok(())
     }
 
+    /// Returns the total length of the PES packet in bytes.
+    ///
+    /// This includes the fixed header size, optional PTS/DTS fields,
+    /// and the payload length.
+    ///
+    /// # Returns
+    /// Length in bytes of the complete PES packet
     pub fn len(&self) -> usize {
         9 + // Fixed PES header size
         (if self.header.pts.is_some() { 5 } else { 0 }) + // PTS size
@@ -176,7 +267,15 @@ impl PESPacket {
     }
 }
 
-// Helper function to write PTS/DTS timestamps
+/// Helper function to write PTS/DTS timestamps to a buffer.
+///
+/// # Arguments
+/// * `buf` - The BytesMut buffer to write to
+/// * `marker` - Marker bits for the timestamp
+/// * `ts` - The timestamp value to write
+///
+/// # Returns
+/// `Ok(())` if writing is successful, `Err` otherwise
 fn write_timestamp(buf: &mut BytesMut, marker: u8, ts: u64) -> Result<()> {
     let pts = ts & 0x1FFFFFFFF; // 33 bits
 

@@ -1,16 +1,33 @@
 use crate::error::{Result, VdkError};
 
+/// H.264/AVC Network Abstraction Layer (NAL) unit types as defined in ITU-T H.264
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NALType {
+    /// Unspecified NAL unit type
     Unknown = 0,
+    /// Coded slice of a non-IDR picture
     NonIDR = 1,
+    /// Coded slice of an IDR picture (key frame)
     IDR = 5,
+    /// Supplemental Enhancement Information
     SEI = 6,
+    /// Sequence Parameter Set
     SPS = 7,
+    /// Picture Parameter Set
     PPS = 8,
 }
 
 impl NALType {
+    /// Creates a NALType from the 5-bit type field in the NAL unit header
+    ///
+    /// # Arguments
+    ///
+    /// * `val` - NAL unit header byte
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(NALType)` - The parsed NAL unit type
+    /// * `Err(_)` - If the type value is not recognized
     pub fn from_u8(val: u8) -> Result<Self> {
         match val & 0x1F {
             0 => Ok(NALType::Unknown),
@@ -24,12 +41,30 @@ impl NALType {
     }
 }
 
+/// An H.264/AVC Network Abstraction Layer (NAL) unit
+///
+/// Represents a single NAL unit found in an H.264 bitstream, containing header and payload data.
+/// NAL units are the basic containers for both parameter sets and coded slice data.
 #[derive(Debug)]
 pub struct NALUnit<'a> {
+    /// Raw NAL unit data including header byte and payload
     pub data: &'a [u8],
 }
 
 impl<'a> NALUnit<'a> {
+    /// Finds all NAL units in a byte slice by locating start codes (0x000001 or 0x00000001)
+    ///
+    /// Scans through the input data looking for NAL unit start codes and extracts each unit.
+    /// Handles both 3-byte (0x000001) and 4-byte (0x00000001) start codes.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Byte slice containing H.264 bitstream data
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<NALUnit>)` - Vector of found NAL units
+    /// * `Err(_)` - If parsing fails
     pub fn find_units(data: &'a [u8]) -> Result<Vec<NALUnit<'a>>> {
         let mut units = Vec::new();
         let mut start = 0;
@@ -64,6 +99,16 @@ impl<'a> NALUnit<'a> {
         Ok(units)
     }
 
+    /// Returns the NAL unit header byte
+    ///
+    /// The header byte contains the NAL unit type and other flags.
+    /// The first bit is the forbidden_zero_bit, next two bits are nal_ref_idc,
+    /// and the remaining 5 bits are the nal_unit_type.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(u8)` - The header byte
+    /// * `Err(_)` - If the NAL unit is empty
     pub fn header(&self) -> Result<u8> {
         self.data
             .first()
@@ -71,11 +116,30 @@ impl<'a> NALUnit<'a> {
             .ok_or_else(|| VdkError::Codec("Empty NAL unit".into()))
     }
 
+    /// Returns the type of this NAL unit
+    ///
+    /// Parses the NAL unit type from the 5 least significant bits of the header byte.
+    /// This determines the content type (e.g., IDR frame, parameter set, etc.).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(NALType)` - The parsed NAL unit type
+    /// * `Err(_)` - If header parsing fails or type is unrecognized
     pub fn nal_type(&self) -> Result<NALType> {
         let header = self.header()?;
         NALType::from_u8(header)
     }
 
+    /// Returns the NAL unit payload (data after header byte)
+    ///
+    /// The payload contains the actual data of the NAL unit, excluding the header byte.
+    /// For parameter sets (SPS/PPS) this contains configuration data.
+    /// For coded slices this contains the compressed video data.
+    ///
+    /// # Returns
+    ///
+    /// * Empty slice if NAL unit has no payload or is invalid
+    /// * Slice containing data after header byte otherwise
     pub fn payload(&self) -> &[u8] {
         if self.data.len() <= 1 {
             &[]

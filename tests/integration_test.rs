@@ -11,8 +11,9 @@ mod tests {
     use tokio::time;
     use tokio::time::{timeout, Duration}; 
     use vdkio::av;
-    use vdkio::av::CodecData;
+    use vdkio::av::{CodecData, CodecDataExt};
     use vdkio::av::Packet;
+    use vdkio::config;
     use vdkio::error::{Result, VdkError};
     use vdkio::format::rtsp::{MediaStream, RTSPClient, TransportInfo};
     use vdkio::format::ts::{HLSSegmenter, TSMuxer};
@@ -27,7 +28,7 @@ mod tests {
     const TEST_HLS_PLAYLIST_CHECK_TIMEOUT: u64 = 5;
     const TEST_PACKET_RECEIVE_TIMEOUT: u64 = 30;
 
-    const RTSP_URL: &str = "rtsp://example.com:3000/cam/realmonitor?channel=1&subtype=0";    
+    // RTSP_URL is removed and we'll get it from config
 
     fn test_network_connection(host: &str, port: u16) -> bool {
         // Try basic TCP connection first
@@ -69,13 +70,13 @@ mod tests {
         }
     }
 
+    // Function to get RTSP URL from config
+    fn get_rtsp_url() -> String {
+        config::get_rtsp_url()
+    }
+
     #[tokio::test]
     async fn test_rtsp_client_live() -> Result<()> {
-        // let rtsp_url = get_url_from_env(
-        //     "TEST_RTSP_URL",
-        //     "rtsp://example.com:3000/cam/realmonitor?channel=1&subtype=0",
-        // );
-
         // Test network connectivity first
         println!("Testing network connectivity...");
         if !test_network_connection("45.122.123.142", 554) {
@@ -84,8 +85,8 @@ mod tests {
             ));
         }
 
-        // Create client outside of timeout to avoid including initialization in the timeout
-        let mut client = RTSPClient::new(RTSP_URL)
+        // Create client using URL from config
+        let mut client = RTSPClient::new(&get_rtsp_url())
             .map_err(|e| VdkError::Codec(format!("Failed to create client: {}", e)))?;
 
         // Connect with TEST_RTSP_CONNECT_TIMEOUT timeout
@@ -155,11 +156,6 @@ mod tests {
         }
     }
 
-    // fn get_url_from_env(key: &str, default: &str) -> String {
-    //     dotenv().ok();
-    //     env::var(key).unwrap_or_else(|_| default.to_string())
-    // }
-
     async fn check_directory(path: &PathBuf) -> Result<bool> {
         let mut interval = time::interval(Duration::from_millis(100));
         let start = time::Instant::now();
@@ -190,7 +186,7 @@ mod tests {
         println!("Created output directory at {}", output_dir.display());
 
         // Configure RTSP client
-        let mut rtsp_client = RTSPClient::new(RTSP_URL)?;
+        let mut rtsp_client = RTSPClient::new(&get_rtsp_url())?;
 
         println!("Connecting to RTSP stream...");
         rtsp_client.connect().await?;
@@ -227,7 +223,7 @@ mod tests {
         muxer = muxer.with_hls(segmenter);
 
         // Initialize muxer with stream info
-        #[derive(Clone)]
+        #[derive(Debug, Clone)]
         struct StreamInfo {
             codec_type: av::CodecType,
             width: Option<u32>,
@@ -250,55 +246,55 @@ mod tests {
             }
         }
 
-        let stream_codecs: Vec<Box<dyn av::CodecData>> = media
-            .iter()
-            .filter_map(|m| {
-                let codec_type = match m.media_type.as_str() {
-                    "video" => av::CodecType::H264,
-                    "audio" => av::CodecType::AAC,
-                    _ => return None,
-                };
+        // StreamInfo implements Clone + CodecData, so it gets CodecDataExt through blanket impl
+        
+        let mut stream_codecs = Vec::new();
+        for m in media.iter() {
+            let codec_type = match m.media_type.as_str() {
+                "video" => av::CodecType::H264,
+                "audio" => av::CodecType::AAC,
+                _ => continue,
+            };
 
-                // Extract SPS/PPS from fmtp if available
-                let mut extra_data = None;
-                if codec_type == av::CodecType::H264 {
-                    if let Some(fmtp) = m.get_attribute("fmtp") {
-                        if let Some(param) = fmtp
-                            .split(';')
-                            .find(|param| param.trim().starts_with("sprop-parameter-sets="))
-                        {
-                            if let Some(sets) = param.split('=').nth(1) {
-                                let mut data = Vec::new();
-                                for set in sets.split(',') {
-                                    if let Ok(bytes) = BASE64_STANDARD.decode(set) {
-                                        data.extend_from_slice(&[0, 0, 1]); // Add start code
-                                        data.extend_from_slice(&bytes);
-                                    }
+            // Extract SPS/PPS from fmtp if available
+            let mut extra_data = None;
+            if codec_type == av::CodecType::H264 {
+                if let Some(fmtp) = m.get_attribute("fmtp") {
+                    if let Some(param) = fmtp
+                        .split(';')
+                        .find(|param| param.trim().starts_with("sprop-parameter-sets="))
+                    {
+                        if let Some(sets) = param.split('=').nth(1) {
+                            let mut data = Vec::new();
+                            for set in sets.split(',') {
+                                if let Ok(bytes) = BASE64_STANDARD.decode(set) {
+                                    data.extend_from_slice(&[0, 0, 1]); // Add start code
+                                    data.extend_from_slice(&bytes);
                                 }
-                                if !data.is_empty() {
-                                    extra_data = Some(data);
-                                }
+                            }
+                            if (!data.is_empty()) {
+                                extra_data = Some(data);
                             }
                         }
                     }
                 }
+            }
 
-                Some(Box::new(StreamInfo {
-                    codec_type,
-                    width: if m.media_type == "video" {
-                        Some(1920)
-                    } else {
-                        None
-                    },
-                    height: if m.media_type == "video" {
-                        Some(1080)
-                    } else {
-                        None
-                    },
-                    extra_data,
-                }) as Box<dyn av::CodecData>)
-            })
-            .collect();
+            stream_codecs.push(Box::new(StreamInfo {
+                codec_type,
+                width: if m.media_type == "video" {
+                    Some(1920)
+                } else {
+                    None
+                },
+                height: if m.media_type == "video" {
+                    Some(1080)
+                } else {
+                    None
+                },
+                extra_data,
+            }) as Box<dyn CodecDataExt>);
+        }
 
         muxer.write_header(&stream_codecs).await?;
 

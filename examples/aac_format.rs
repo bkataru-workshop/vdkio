@@ -1,18 +1,47 @@
 use std::error::Error;
 use std::time::Duration;
 use tokio::fs::File;
-use vdkio::av::{Demuxer, Muxer, Packet};
+use vdkio::av::{CodecData, CodecDataExt, CodecType, Demuxer, Muxer, Packet};
 use vdkio::format::aac::{AACDemuxer, AACMuxer};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Example 1: Writing AAC file
     {
+        // Create AAC codec configuration
+        #[derive(Clone)]
+        struct AACCodecData {
+            codec_type: CodecType,
+        }
+
+        impl CodecData for AACCodecData {
+            fn codec_type(&self) -> CodecType {
+                self.codec_type
+            }
+
+            fn width(&self) -> Option<u32> {
+                None
+            }
+
+            fn height(&self) -> Option<u32> {
+                None
+            }
+
+            fn extra_data(&self) -> Option<&[u8]> {
+                None
+            }
+        }
+
         let output_file = File::create("output.aac").await?;
         let mut muxer = AACMuxer::new(output_file);
 
-        // Write empty header - config will be extracted from first packet
-        muxer.write_header(&[]).await?;
+        // Create AAC stream configuration
+        let aac_config = Box::new(AACCodecData {
+            codec_type: CodecType::AAC,
+        }) as Box<dyn CodecDataExt>;
+
+        // Write header with AAC stream config
+        muxer.write_header(&[aac_config]).await?;
 
         // Write some AAC frames (in this example we're just writing dummy frames)
         for i in 0..10 {
@@ -29,6 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             frame_data.extend_from_slice(&[0u8; 1024]); // Dummy AAC frame data
 
             let packet = Packet::new(frame_data)
+                .with_stream_index(0)  // Use stream index 0 since we only have one stream
                 .with_pts(i * 23_220) // 23.22ms per frame at 44.1kHz
                 .with_duration(Duration::from_micros(23220))
                 .with_key_flag(true);

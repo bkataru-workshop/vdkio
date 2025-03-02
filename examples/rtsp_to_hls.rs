@@ -2,19 +2,19 @@ use bytes::Bytes;
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::BufWriter;
 use tokio::time;
 use vdkio::av::transcode::{
     StreamCodecData, TranscodeOptions, Transcoder, VideoDecoder, VideoEncoder,
 };
-use vdkio::av::{CodecType, Packet};
+use vdkio::av::{CodecDataExt, CodecType, Packet};
 use vdkio::codec::h264::transcode::create_transcoder_for_resolution;
+use vdkio::config;
 use vdkio::error::VdkError;
 use vdkio::format::rtsp::{RTSPClient, RTSPSetupOptions};
 use vdkio::format::ts::{HLSSegmenter, HLSVariant, TSMuxer};
 use vdkio::format::Muxer;
 
-const RTSP_URL: &str = "rtsp://example.com/stream";
+// Remove hardcoded RTSP_URL
 
 #[allow(dead_code)]
 struct HLSVariantConfig {
@@ -48,7 +48,7 @@ async fn setup_variant(
     resolution: (u32, u32),
     fps: u32,
     output_dir: &Path,
-    codecs: &[StreamCodecData],
+    codecs: Vec<StreamCodecData>,
 ) -> Result<HLSVariantConfig, Box<dyn std::error::Error>> {
     let variant = HLSVariant {
         name: name.to_string(),
@@ -76,14 +76,15 @@ async fn setup_variant(
         find_audio_codec: None, // Pass through audio for now
     };
 
-    let transcoder = Transcoder::new(codecs.to_vec(), options)?;
+    let transcoder = Transcoder::new(codecs, options)?;
 
     // Initialize muxer with transcoded streams info
-    let codec_boxes: Vec<Box<dyn vdkio::av::CodecData>> = transcoder
+    let codec_boxes: Vec<Box<dyn CodecDataExt>> = transcoder
         .streams()
         .iter()
-        .map(|s| Box::new(s.clone()) as Box<dyn vdkio::av::CodecData>)
+        .map(|s| Box::new(s.clone()) as Box<dyn CodecDataExt>)
         .collect();
+
     muxer.write_header(&codec_boxes).await?;
 
     Ok(HLSVariantConfig {
@@ -165,8 +166,7 @@ async fn setup_rtsp_client(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    // let rtsp_url = std::env::var("RTSP_URL").expect("RTSP_URL environment variable must be set");
-    let rtsp_url = RTSP_URL;
+    let rtsp_url = config::get_rtsp_url();
     let hls_output_dir = Path::new("output/hls");
 
     // Create output directory
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut variant_configs = Vec::new();
     for (name, bandwidth, resolution, fps) in &variants {
         let config =
-            setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, &codecs).await?;
+            setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, codecs.clone()).await?;
         variant_configs.push(config);
     }
 
@@ -287,14 +287,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     let setup_options = RTSPSetupOptions::new().with_video(true).with_audio(true);
                     match setup_rtsp_client(&rtsp_url, setup_options).await {
-                        Ok((mut new_client, codecs)) => {
+                        Ok((new_client, codecs)) => {
                             println!("Reconnection successful");
                             client = new_client;
 
                             // Re-create variant configs
                             let mut setup_success = true;
                             for (name, bandwidth, resolution, fps) in variants.iter() {
-                                match setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, &codecs).await {
+                                match setup_variant(name, *bandwidth, *resolution, *fps, hls_output_dir, codecs.clone()).await {
                                     Ok(config) => {
                                         variant_configs.push(config);
                                     },

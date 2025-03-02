@@ -7,33 +7,64 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 const DEFAULT_SEGMENT_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_PLAYLIST_SIZE: usize = 5;
 
+/// Represents a variant stream in an HLS master playlist.
+///
+/// HLS supports multiple variant streams with different qualities and bitrates,
+/// allowing clients to switch between them based on network conditions.
 #[derive(Debug, Clone)]
 pub struct HLSVariant {
+    /// Unique identifier for this variant
     pub name: String,
+    /// Average bandwidth in bits per second
     pub bandwidth: u32,
+    /// Video resolution as (width, height) if applicable
     pub resolution: Option<(u32, u32)>,
+    /// RFC 6381 codec string (e.g., "avc1.64001f,mp4a.40.2")
     pub codecs: String,
 }
 
+/// Represents a media segment in an HLS playlist.
+///
+/// Each segment contains a portion of the media stream and has associated
+/// timing and sequence information.
 #[derive(Debug)]
 pub struct HLSSegment {
+    /// Name of the segment file
     pub filename: String,
+    /// Duration of media content in the segment
     pub duration: Duration,
+    /// Monotonically increasing sequence number
     pub sequence_number: u32,
+    /// Optional byte range for partial segments
     pub byte_range: Option<(u64, u64)>,
 }
 
+/// Represents an HLS media playlist (*.m3u8).
+///
+/// A media playlist contains information about media segments and their ordering,
+/// along with timing and playback information.
 #[derive(Debug)]
 pub struct HLSPlaylist {
+    /// HLS protocol version (usually 3)
     pub version: u8,
+    /// Maximum segment duration
     pub target_duration: Duration,
+    /// First sequence number in the playlist
     pub media_sequence: u32,
+    /// List of media segments
     pub segments: Vec<HLSSegment>,
+    /// Indicates if the playlist is complete
     pub is_endlist: bool,
+    /// Optional variant information for master playlists
     pub variant: Option<HLSVariant>,
 }
 
 impl HLSPlaylist {
+    /// Creates a new HLS playlist with the specified target duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_duration` - Maximum duration of any segment in the playlist
     pub fn new(target_duration: Duration) -> Self {
         Self {
             version: 3,
@@ -45,11 +76,21 @@ impl HLSPlaylist {
         }
     }
 
+    /// Sets the variant information for this playlist.
+    ///
+    /// # Arguments
+    ///
+    /// * `variant` - The variant stream information
     pub fn with_variant(mut self, variant: HLSVariant) -> Self {
         self.variant = Some(variant);
         self
     }
 
+    /// Writes the playlist to an async writer in M3U8 format.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - The writer to write the M3U8 content to
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         // Write basic M3U8 header
         writer.write_all(b"#EXTM3U\n").await?;
@@ -105,12 +146,10 @@ impl HLSPlaylist {
 
         // Write segments
         for segment in &self.segments {
-            // Write segment duration
             writer
                 .write_all(format!("#EXTINF:{:.3},\n", segment.duration.as_secs_f64()).as_bytes())
                 .await?;
 
-            // Write segment URI with optional byte range
             if let Some((start, length)) = segment.byte_range {
                 writer
                     .write_all(format!("#EXT-X-BYTERANGE:{}@{}\n", length, start).as_bytes())
@@ -130,22 +169,38 @@ impl HLSPlaylist {
     }
 }
 
+/// Represents an HLS master playlist containing multiple variant streams.
+///
+/// The master playlist allows clients to choose the most appropriate quality
+/// level based on their network conditions and device capabilities.
 #[derive(Debug)]
 pub struct HLSMasterPlaylist {
+    /// List of available variant streams
     pub variants: Vec<HLSVariant>,
 }
 
 impl HLSMasterPlaylist {
+    /// Creates a new empty master playlist.
     pub fn new() -> Self {
         Self {
             variants: Vec::new(),
         }
     }
 
+    /// Adds a variant stream to the master playlist.
+    ///
+    /// # Arguments
+    ///
+    /// * `variant` - The variant stream to add
     pub fn add_variant(&mut self, variant: HLSVariant) {
         self.variants.push(variant);
     }
 
+    /// Writes the master playlist to an async writer in M3U8 format.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - The writer to write the M3U8 content to
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         writer.write_all(b"#EXTM3U\n").await?;
         writer.write_all(b"#EXT-X-VERSION:3\n").await?;
@@ -182,18 +237,36 @@ impl HLSMasterPlaylist {
     }
 }
 
+/// Manages the creation and maintenance of HLS segments and playlists.
+///
+/// The segmenter handles creating TS segments, updating playlists, and managing
+/// the sliding window of available segments.
+#[derive(Debug)]
 pub struct HLSSegmenter {
+    /// Directory where segments and playlists are written
     output_dir: PathBuf,
+    /// Target duration for each segment
     segment_duration: Duration,
+    /// Maximum number of segments to keep in the playlist
     max_segments: usize,
+    /// Current segment sequence number
     sequence_number: u32,
+    /// Media playlist for this variant
     playlist: HLSPlaylist,
+    /// Master playlist containing all variants
     master_playlist: HLSMasterPlaylist,
+    /// Information about the currently active segment
     current_segment: Option<(PathBuf, Duration, u64)>,
+    /// Current variant stream configuration
     variant: Option<HLSVariant>,
 }
 
 impl HLSSegmenter {
+    /// Creates a new HLS segmenter writing to the specified directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_dir` - Directory where segments and playlists will be written
     pub fn new<P: AsRef<Path>>(output_dir: P) -> Self {
         Self {
             output_dir: output_dir.as_ref().to_owned(),
@@ -207,17 +280,32 @@ impl HLSSegmenter {
         }
     }
 
+    /// Sets the target duration for each segment.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The target segment duration
     pub fn with_segment_duration(mut self, duration: Duration) -> Self {
         self.segment_duration = duration;
         self.playlist.target_duration = duration;
         self
     }
 
+    /// Sets the maximum number of segments to keep in the playlist.
+    ///
+    /// # Arguments
+    ///
+    /// * `count` - Maximum number of segments
     pub fn with_max_segments(mut self, count: usize) -> Self {
         self.max_segments = count;
         self
     }
 
+    /// Adds a variant stream configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `variant` - The variant stream configuration
     pub fn with_variant(mut self, variant: HLSVariant) -> Self {
         self.variant = Some(variant.clone());
         self.playlist = self.playlist.with_variant(variant.clone());
@@ -225,6 +313,15 @@ impl HLSSegmenter {
         self
     }
 
+    /// Starts a new segment at the specified timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - The starting timestamp for the new segment
+    ///
+    /// # Returns
+    ///
+    /// A file handle for writing segment data
     pub async fn start_segment(&mut self, timestamp: Duration) -> Result<File> {
         let prefix = self
             .variant
@@ -239,6 +336,11 @@ impl HLSSegmenter {
         Ok(file)
     }
 
+    /// Finishes the current segment and updates the playlist.
+    ///
+    /// # Arguments
+    ///
+    /// * `end_timestamp` - The ending timestamp for the segment
     pub async fn finish_segment(&mut self, end_timestamp: Duration) -> Result<()> {
         if let Some((path, start_time, _bytes_written)) = self.current_segment.take() {
             let duration = end_timestamp - start_time;
@@ -257,6 +359,7 @@ impl HLSSegmenter {
 
             self.playlist.segments.push(segment);
 
+            // Remove old segments if we exceed max_segments
             while self.playlist.segments.len() > self.max_segments {
                 if let Some(old_segment) = self.playlist.segments.first() {
                     let old_path = self.output_dir.join(&old_segment.filename);
@@ -272,14 +375,21 @@ impl HLSSegmenter {
         Ok(())
     }
 
+    /// Writes the current media playlist to the provided writer.
     pub async fn write_playlist<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         self.playlist.write_to(writer).await
     }
 
+    /// Writes the master playlist to the provided writer.
     pub async fn write_master_playlist<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         self.master_playlist.write_to(writer).await
     }
 
+    /// Checks if a new segment should be started based on timing.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_time` - The current timestamp to check against
     pub fn should_start_new_segment(&self, current_time: Duration) -> bool {
         if let Some((_, start_time, _)) = &self.current_segment {
             current_time - *start_time >= self.segment_duration
@@ -288,6 +398,7 @@ impl HLSSegmenter {
         }
     }
 
+    /// Returns the output directory path.
     pub fn get_output_dir(&self) -> &PathBuf {
         &self.output_dir
     }

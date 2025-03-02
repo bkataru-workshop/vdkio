@@ -5,11 +5,20 @@
 
 const CRC32_MPEG2: u32 = 0x04C11DB7;
 
+/// MPEG-2 CRC32 calculator used for Transport Stream PSI table validation
+///
+/// Implements the CRC32 algorithm specified in ITU-T H.222.0 / ISO/IEC 13818-1
+/// for validating Program Specific Information (PSI) tables in MPEG-2 Transport Streams.
 pub struct Crc32Mpeg2 {
+    /// Lookup table for fast CRC calculation
     table: [u32; 256],
 }
 
 impl Crc32Mpeg2 {
+    /// Creates a new CRC32 calculator with pre-computed lookup table
+    ///
+    /// The lookup table is initialized with the MPEG-2 polynomial:
+    /// x32 + x26 + x23 + x22 + x16 + x12 + x11 + x10 + x8 + x7 + x5 + x4 + x2 + x + 1
     pub fn new() -> Self {
         let mut table = [0u32; 256];
         for i in 0..256 {
@@ -26,6 +35,25 @@ impl Crc32Mpeg2 {
         Self { table }
     }
 
+    /// Calculates the CRC32 checksum for the given data using the MPEG-2 algorithm
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Byte slice containing the data to calculate CRC for
+    ///
+    /// # Returns
+    ///
+    /// The calculated CRC32 checksum using the MPEG-2 polynomial
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vdkio::utils::Crc32Mpeg2;
+    ///
+    /// let crc = Crc32Mpeg2::new();
+    /// let data = [0x01, 0x02, 0x03];
+    /// let checksum = crc.calculate(&data);
+    /// ```
     pub fn calculate(&self, data: &[u8]) -> u32 {
         let mut crc = 0xFFFFFFFF;
         for &byte in data {

@@ -1,0 +1,5 @@
+# VDKIO Configuration Template
+# Copy this file to 'config.toml' and fill in your actual values
+
+# RTSP URL for testing/examples
+rtsp_url = "rtsp://example.com:3000/stream"

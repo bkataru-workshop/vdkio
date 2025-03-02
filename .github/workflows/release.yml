@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Check version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          CARGO_VERSION=$(cargo pkgid | cut -d# -f2)
+          if [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag version ($VERSION) doesn't match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${CRATES_TOKEN}
+        env:
+          CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get all commits since last tag
+          git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:"* %s" > CHANGELOG.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ env.VERSION }}
+          body_path: CHANGELOG.txt
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}

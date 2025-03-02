@@ -2,16 +2,42 @@ use super::types::{AACConfig, AACFrame, ADTSHeader, ProfileType};
 use crate::utils::BitReader;
 use crate::{Result, VdkError};
 
+/// Parser for AAC audio data supporting both raw AAC frames and ADTS format.
+///
+/// The parser can:
+/// - Parse ADTS (Audio Data Transport Stream) headers
+/// - Extract raw AAC frames from ADTS streams
+/// - Handle raw AAC frames with provided configuration
+/// - Store and manage AAC configuration information
 #[derive(Debug)]
 pub struct AACParser {
+    /// Current AAC configuration, extracted from ADTS or set manually
     config: Option<AACConfig>,
 }
 
 impl AACParser {
+    /// Creates a new AAC parser instance.
+    ///
+    /// The parser starts with no configuration. Configuration can be:
+    /// - Extracted from ADTS headers automatically
+    /// - Set manually using `set_config`
     pub fn new() -> Self {
         Self { config: None }
     }
 
+    /// Parses an AAC frame from raw data.
+    ///
+    /// This method can handle:
+    /// - ADTS formatted data (will extract configuration and frame)
+    /// - Raw AAC frame data (requires configuration to be set)
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw data containing either ADTS frame or raw AAC frame
+    ///
+    /// # Returns
+    ///
+    /// A parsed AAC frame containing configuration and frame data
     pub fn parse_frame(&mut self, data: &[u8]) -> Result<AACFrame> {
         // Try to parse as ADTS frame first
         if data.len() >= 7 {
@@ -45,6 +71,22 @@ impl AACParser {
         }
     }
 
+    /// Parses an ADTS (Audio Data Transport Stream) header.
+    ///
+    /// ADTS headers contain frame synchronization and audio configuration
+    /// information including:
+    /// - Profile (AAC-LC, HE-AAC, etc.)
+    /// - Sample rate
+    /// - Channel configuration
+    /// - Frame length
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw data containing ADTS header (must be at least 7 bytes)
+    ///
+    /// # Returns
+    ///
+    /// Parsed ADTS header information or error if parsing fails
     pub fn parse_adts_header(&mut self, data: &[u8]) -> Result<ADTSHeader> {
         if data.len() < 7 {
             return Err(VdkError::Parser("ADTS header too short".into()));
@@ -95,10 +137,23 @@ impl AACParser {
         })
     }
 
+    /// Sets the AAC configuration manually.
+    ///
+    /// This is needed when processing raw AAC frames that don't include
+    /// configuration information (like non-ADTS streams).
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The AAC configuration to use for parsing frames
     pub fn set_config(&mut self, config: AACConfig) {
         self.config = Some(config);
     }
 
+    /// Returns the current AAC configuration if available.
+    ///
+    /// The configuration could have been:
+    /// - Extracted from an ADTS header
+    /// - Set manually via `set_config`
     pub fn config(&self) -> Option<&AACConfig> {
         self.config.as_ref()
     }

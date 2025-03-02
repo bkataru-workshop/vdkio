@@ -1,6 +1,17 @@
 # vdkio - Rust Video Development Kit (VDK)
 
-A toolkit for building video streaming applications in Rust. The VDK provides a collection of modules for handling various video formats, codecs, and streaming protocols. It aims to provide a high-performance, flexible, and extensible framework for video processing and streaming.
+[![Crates.io](https://img.shields.io/crates/v/vdkio.svg)](https://crates.io/crates/vdkio)
+[![Documentation](https://docs.rs/vdkio/badge.svg)](https://docs.rs/vdkio)
+[![License](https://img.shields.io/crates/l/vdkio.svg)](LICENSE)
+[![Rust](https://github.com/rust-vdk/vdkio/workflows/CI/badge.svg)](https://github.com/rust-vdk/vdkio/actions)
+[![codecov](https://codecov.io/gh/rust-vdk/vdkio/branch/main/graph/badge.svg)](https://codecov.io/gh/rust-vdk/vdkio)
+
+A toolkit for building video streaming applications in Rust. The VDK provides a collection of modules for handling various video formats, codecs, and streaming protocols. It aims to provide a high-performance, flexible, and extensible framework for video processing and streaming, with a primary focus on RTSP to HLS conversion for web-based video streaming applications.
+
+📦 [crates.io](https://crates.io/crates/vdkio) 
+📖 [Documentation](https://docs.rs/vdkio) 
+🔧 [Examples](examples/) 
+📝 [Changelog](CHANGELOG.md)
 
 ## Features
 
@@ -30,7 +41,18 @@ These features have been thoroughly tested with live streams and are production-
 2. **Codec Support (via RTSP streams):**
    - **H.264:** Fully implemented and tested with live RTSP streams, including detailed handling of NALUs, SPS, and PPS.
    - **H.265:** Basic functionality tested with live RTSP streams. Complete parameter set handling and more extensive testing are in progress.
-   - **AAC:** AAC codec parsing has been tested as part of live RTSP streams for audio extraction, confirming basic functionality. Full AAC format support and more comprehensive testing remain in development. 
+   - **AAC:** AAC codec parsing has been tested only as part of live RTSP streams for audio extraction, confirming basic functionality for RTSP audio. Standalone AAC format support and comprehensive testing remain in development.
+
+### Primary Focus: RTSP to HLS Conversion
+
+The project's primary focus is enabling robust RTSP to HLS conversion for web-based video streaming applications. This feature is critical for building HTTP servers that can transcode RTSP streams to HLS without external dependencies. Current status:
+
+- Basic RTSP to HLS conversion pipeline ✅
+- TS segment generation and management ✅
+- PCR timing and discontinuity handling ✅
+- Multi-bitrate adaptation support ✅
+- Error recovery with reconnection ⚠️ (Basic implementation)
+- Performance optimization 🚧 (In progress)
 
 ### In Progress Implementations
 The following features are implemented and are undergoing further testing and refinement to ensure stability and production readiness:
@@ -65,12 +87,17 @@ The following features are implemented and are undergoing further testing and re
      - Further refinement and optimization for performance and stability
      - More comprehensive live testing for production readiness
    
+ 
+### Preliminary and Planned Implementations
 
-### Preliminary Implementations
+While live testing URLs are essential for full validation and production readiness, we provide preliminary implementations with basic unit tests for formats that currently lack live testing capabilities. This approach ensures:
 
-The following features have preliminary implementations with basic unit tests. These implementations are functional but require thorough testing with live streams and more comprehensive tests for production use. 
+1. **Basic Functionality:** Core features are implemented and unit tested
+2. **Format Compatibility:** Basic compatibility with the format specifications
+3. **Integration Readiness:** Groundwork for future live testing and validation
+4. **Development Continuity:** Progress continues while awaiting live testing resources
 
-**Note:** For formats listed under "Preliminary Implementations" and "Other Planned Implementations", live testing URLs are required for full validation and feature parity. Basic implementations and unit tests are provided, but comprehensive testing with live streams is essential for production readiness.
+**Note:** These implementations should be considered experimental until validated with live streams. They provide a foundation for testing and development but are not recommended for production use without comprehensive live testing.
 
 1. **Format Support:**
    - **AAC Format:** Basic implementation of AAC file format support (muxer/demuxer) with unit tests only. Needs live stream testing and more comprehensive tests.
@@ -78,16 +105,25 @@ The following features have preliminary implementations with basic unit tests. T
 
 ### Critical Next Steps
 
-1. **Comprehensive Testing:**
-   - **HLS Support:** Conduct more comprehensive testing with varied RTSP streams and codec combinations to ensure the robustness of HLS streaming and identify any potential issues.
-   - **TS Format:** Perform thorough testing with diverse stream types and transport stream variations to fully validate TS format handling and error recovery.
+1. **RTSP to HLS Conversion Enhancement:**
+    - Implement robust error recovery for stream interruptions and network issues
+    - Optimize TS segment generation and management for improved performance
+    - Add comprehensive testing with varied RTSP streams and codec combinations
+    - Enhance PCR timing accuracy and discontinuity handling
+    - Implement advanced buffer management for smoother playback
 
-2. **Enhanced Error Handling and Recovery:**
-   - **HLS Support:** Implement more robust error recovery and handling mechanisms for HLS streaming to improve stability and reliability in real-world scenarios.
-   - **TS Format:** Enhance error recovery mechanisms for TS format handling to ensure robust and fault-tolerant stream processing.
+2. **Performance Optimization:**
+    - Profile and optimize TS muxing operations
+    - Improve memory usage in segment management
+    - Enhance concurrent stream handling efficiency
+    - Optimize PCR timing calculations
+    - Implement efficient segment cleanup strategies
 
-3. **Performance Optimization:**
-   - **General:** Identify and address any performance bottlenecks in TS muxing and HLS segmenting to optimize vdkio for high-performance video streaming applications.
+3. **Comprehensive Testing Infrastructure:**
+    - Develop automated testing framework for RTSP to HLS conversion
+    - Create test suites for various network conditions
+    - Implement stress testing for long-running streams
+    - Add performance benchmarking tools
 
 4. **Acquire Live Testing URLs**:
    - Obtain live testing URLs for the following formats to enable full feature validation, comprehensive testing, and ensure feature parity with the reference vdk implementation:
@@ -95,7 +131,7 @@ The following features have preliminary implementations with basic unit tests. T
      - FLV
      - FMP4
      - MKV
-     - MP4 variants (MP4, MP4F, MP4M)
+     - MP4 variants
      - RTMP
      - WebRTC
 
@@ -187,7 +223,31 @@ See the `examples/` directory:
 - `ts_format.rs`: Working with Transport Stream format
 - `aac_format.rs`: Working with AAC files (basic implementation)
 - `rtsp_to_hls.rs`: Converting RTSP streams to HLS format
-- More examples will be added as new formats are implemented
+- `stress_test.rs`: Performance and stability testing with:
+  - Multi-bitrate transcoding
+  - Long-running stream validation
+  - Performance metrics collection
+  - Error recovery scenarios
+
+## Testing Infrastructure
+
+The project includes comprehensive test suites:
+
+1. **Unit and Integration Tests**:
+   - RTSP client functionality (`integration_test.rs`)
+   - RTSP to HLS pipeline validation (`integration_test.rs`)
+
+2. **Advanced Protocol Tests** (`rtsp_hls_test.rs`):
+   - RTSP error handling and recovery
+   - TS packet validation
+   - HLS playlist verification
+   - Network interruption handling
+
+3. **Performance Testing**:
+   - Long-running stability tests (`stress_test.rs`)
+   - Multi-bitrate transcoding validation
+   - Resource usage monitoring
+   - Error recovery verification
 
 ## Usage Notes
 

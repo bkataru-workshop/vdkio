@@ -6,13 +6,20 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
+/// Statistics for an RTSP media stream
 #[derive(Debug)]
 pub struct StreamStatistics {
+    /// Total number of RTP packets received
     pub packets_received: u32,
+    /// Total bytes of media data received
     pub bytes_received: u64,
+    /// Number of packets lost during transmission
     pub packets_lost: u32,
+    /// Interarrival jitter (in timestamp units)
     pub jitter: f64,
+    /// Last received sequence number
     pub last_seq: u16,
+    /// Last received RTP timestamp
     pub last_timestamp: u32,
 }
 
@@ -29,18 +36,51 @@ impl Default for StreamStatistics {
     }
 }
 
+/// Represents a media stream within an RTSP session
 #[derive(Debug)]
 pub struct MediaStream {
-pub media_type: String,
-pub control: String,
-pub transport: TransportInfo,
-pub rtp_socket: Option<Arc<UdpSocket>>,
-pub rtcp_socket: Option<Arc<UdpSocket>>,
-pub jitter_buffer: JitterBuffer,
-pub statistics: StreamStatistics,
-pub packet_sender: mpsc::Sender<Vec<u8>>,
+    /// Type of media (e.g., "video" or "audio")
+    pub media_type: String,
+    /// Stream control URL (e.g., "trackID=0")
+    pub control: String,
+    /// Transport configuration for the stream
+    pub transport: TransportInfo,
+    /// UDP socket for RTP packets (if using UDP transport)
+    pub rtp_socket: Option<Arc<UdpSocket>>,
+    /// UDP socket for RTCP packets (if using UDP transport)
+    pub rtcp_socket: Option<Arc<UdpSocket>>,
+    /// Buffer for handling out-of-order packets
+    pub jitter_buffer: JitterBuffer,
+    /// Stream performance statistics
+    pub statistics: StreamStatistics,
+    /// Channel for sending received media packets
+    pub packet_sender: mpsc::Sender<Vec<u8>>,
 }
+
 impl MediaStream {
+    /// Creates a new media stream with the specified configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `media_type` - Type of media ("video" or "audio")
+    /// * `control` - Stream control identifier
+    /// * `transport` - Transport configuration
+    /// * `packet_sender` - Channel for sending received packets
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use vdkio::format::rtsp::{MediaStream, TransportInfo};
+    /// use tokio::sync::mpsc;
+    ///
+    /// let (tx, _rx) = mpsc::channel(100);
+    /// let stream = MediaStream::new(
+    ///     "video",
+    ///     "trackID=0",
+    ///     TransportInfo::new_rtp_avp((5000, 5001)),
+    ///     tx
+    /// );
+    /// ```
     pub fn new(
         media_type: &str,
         control: &str,
@@ -59,6 +99,25 @@ impl MediaStream {
         }
     }
 
+    /// Configures the stream to use TCP interleaved transport
+    ///
+    /// # Arguments
+    ///
+    /// * `interleaved` - Channel numbers for RTP and RTCP data
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use vdkio::format::rtsp::{MediaStream, TransportInfo};
+    /// # use tokio::sync::mpsc;
+    /// # let (tx, _rx) = mpsc::channel(100);
+    /// let stream = MediaStream::new(
+    ///     "video",
+    ///     "trackID=0",
+    ///     TransportInfo::new_rtp_avp((0, 0)),
+    ///     tx
+    /// ).with_tcp_transport((0, 1)); // Use channels 0 and 1
+    /// ```
     pub fn with_tcp_transport(mut self, interleaved: (u16, u16)) -> Self {
         let mut extra_params = self.transport.extra_params.clone();
         extra_params.insert(
@@ -80,6 +139,14 @@ impl MediaStream {
         self
     }
 
+    /// Sets up UDP sockets for RTP/RTCP transport
+    ///
+    /// This method binds UDP sockets for receiving RTP and RTCP packets
+    /// when using UDP transport mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if socket binding fails
     pub async fn setup_transport(&mut self) -> Result<()> {
         if self.transport.protocol != "RTP/AVP/TCP" {
             if let Some(rtp_port) = self.transport.client_port_rtp {
@@ -97,6 +164,7 @@ impl MediaStream {
         Ok(())
     }
 
+    /// Generates the transport header string for RTSP SETUP requests
     pub fn get_transport_str(&self) -> String {
         let mut transport = format!("{};unicast", self.transport.protocol);
 
@@ -132,6 +200,13 @@ impl MediaStream {
         transport
     }
 
+    /// Updates stream statistics with received packet information
+    ///
+    /// # Arguments
+    ///
+    /// * `seq` - RTP sequence number
+    /// * `timestamp` - RTP timestamp
+    /// * `bytes` - Packet size in bytes
     pub fn update_statistics(&mut self, seq: u16, timestamp: u32, bytes: usize) {
         let stats = &mut self.statistics;
         stats.packets_received += 1;
@@ -161,6 +236,11 @@ impl MediaStream {
         stats.last_timestamp = timestamp;
     }
 
+    /// Generates an RTCP receiver report based on current statistics
+    ///
+    /// # Arguments
+    ///
+    /// * `ssrc` - Synchronization source identifier for the report
     pub fn generate_rtcp_report(&self, ssrc: u32) -> RTCPPacket {
         let stats = &self.statistics;
         RTCPPacket::ReceiverReport {

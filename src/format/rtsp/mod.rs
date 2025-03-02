@@ -1,3 +1,62 @@
+//! # RTSP Protocol Implementation
+//!
+//! This module provides a complete implementation of the RTSP (Real Time Streaming Protocol)
+//! client, supporting features such as:
+//!
+//! - Connection establishment and authentication
+//! - Session management
+//! - Media setup and control
+//! - Stream statistics and monitoring
+//! - SDP (Session Description Protocol) parsing
+//!
+//! ## Quick Start
+//!
+//! ```rust,no_run
+//! use vdkio::format::rtsp::{RTSPClient, RTSPSetupOptions};
+//! use tokio;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Create client with custom options
+//!     let options = RTSPSetupOptions::default()
+//!         .with_authentication("username", "password")
+//!         .with_timeout(std::time::Duration::from_secs(10));
+//!     
+//!     let client = RTSPClient::connect_with_options(
+//!         "rtsp://example.com/stream",
+//!         options
+//!     ).await?;
+//!     
+//!     // Setup and start playing
+//!     client.setup().await?;
+//!     client.play().await?;
+//!     
+//!     // Read media packets
+//!     while let Some(packet) = client.read_packet().await? {
+//!         println!("Received packet: {:?}", packet);
+//!     }
+//!     
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Stream Statistics
+//!
+//! ```rust,no_run
+//! use vdkio::format::rtsp::{RTSPClient, StreamStatistics};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = RTSPClient::connect("rtsp://example.com/stream").await?;
+//! 
+//! // Get stream statistics
+//! let stats: StreamStatistics = client.get_statistics().await?;
+//! println!("Packets received: {}", stats.packets_received);
+//! println!("Packets lost: {}", stats.packets_lost);
+//! println!("Jitter: {} ms", stats.jitter_ms);
+//! # Ok(())
+//! # }
+//! ```
+
 mod client;
 mod connection;
 mod stream;
@@ -9,19 +68,52 @@ pub use transport::{CastType, TransportInfo};
 
 use thiserror::Error;
 
+/// Errors that can occur during RTSP operations
 #[derive(Debug, Error)]
 pub enum RTSPError {
+    /// Protocol-level errors (malformed messages, invalid sequence)
     #[error("Protocol error: {0}")]
     Protocol(String),
+
+    /// Authentication failures
     #[error("Authentication error: {0}")]
     Auth(String),
+
+    /// Transport-related errors (network issues, timeout)
     #[error("Transport error: {0}")]
     Transport(String),
+
+    /// SDP parsing errors
     #[error("Invalid SDP: {0}")]
     SDPError(String),
 }
 
-/// Helper function to parse standard SDP media descriptions and their attributes
+/// Helper function to parse standard SDP media descriptions and their attributes.
+/// 
+/// This function parses media descriptions following RFC 4566 format:
+/// ```text
+/// m=<media> <port> <proto> <fmt> ...
+/// a=<attribute>
+/// a=<attribute>:<value>
+/// ```
+///
+/// # Arguments
+///
+/// * `media` - The media description string to parse
+///
+/// # Returns
+///
+/// A `Result` containing either a `MediaDescription` or an `RTSPError`
+///
+/// # Examples
+///
+/// ```
+/// # use vdkio::format::rtsp::parse_sdp_media;
+/// let media = "video 0 RTP/AVP 96\na=control:trackID=0\na=rtpmap:96 H264/90000";
+/// let desc = parse_sdp_media(media).unwrap();
+/// assert_eq!(desc.media_type, "video");
+/// assert_eq!(desc.get_attribute("rtpmap").unwrap(), "96 H264/90000");
+/// ```
 pub(crate) fn parse_sdp_media(media: &str) -> Result<MediaDescription, RTSPError> {
     let mut lines = media.lines();
     let media_line = lines
@@ -59,24 +151,33 @@ pub(crate) fn parse_sdp_media(media: &str) -> Result<MediaDescription, RTSPError
     Ok(description)
 }
 
+/// Represents a media description in an SDP message
 #[derive(Debug, Clone)]
 pub struct MediaDescription {
+    /// Type of media (e.g., "video", "audio")
     pub media_type: String,
+    /// Port number for the media stream
     pub port: u16,
+    /// Transport protocol (e.g., "RTP/AVP")
     pub protocol: String,
+    /// Format identifier (e.g., payload type for RTP)
     pub format: String,
+    /// Additional attributes for the media description
     pub attributes: std::collections::HashMap<String, String>,
 }
 
 impl MediaDescription {
+    /// Get the value of a media attribute
     pub fn get_attribute(&self, name: &str) -> Option<&String> {
         self.attributes.get(name)
     }
 
+    /// Set a media attribute
     pub fn set_attribute(&mut self, name: &str, value: &str) {
         self.attributes.insert(name.to_string(), value.to_string());
     }
 
+    /// Remove a media attribute
     pub fn remove_attribute(&mut self, name: &str) -> Option<String> {
         self.attributes.remove(name)
     }

@@ -1,7 +1,6 @@
 use super::hls::HLSSegmenter;
-use super::parser::TSPacketParser;
 use super::types::*;
-use crate::av::{self, Packet};
+use crate::av::{self, CodecDataExt, Packet};
 use crate::error::{Result, VdkError};
 use crate::format::Muxer as FormatMuxer;
 use crate::utils::crc::Crc32Mpeg2;
@@ -10,13 +9,19 @@ use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{self, AsyncWrite, AsyncWriteExt};
 
+#[allow(dead_code)]
 const PCR_INTERVAL: Duration = Duration::from_millis(40); // ~25 PCR updates per second
 
-#[derive(Clone)]
+/// Codec information specific to Transport Stream format.
+#[derive(Debug, Clone)]
 struct TSCodecData {
+    /// Type of codec (H264, AAC, etc.)
     codec_type: av::CodecType,
+    /// Width in pixels for video codecs
     width: Option<u32>,
+    /// Height in pixels for video codecs
     height: Option<u32>,
+    /// Codec-specific extra data (e.g., SPS/PPS for H.264)
     extra_data: Option<Vec<u8>>,
 }
 
@@ -35,10 +40,17 @@ impl av::CodecData for TSCodecData {
     }
 }
 
+/// MPEG Transport Stream muxer.
+///
+/// Implements multiplexing of multiple elementary streams (video, audio)
+/// into a single MPEG-TS bitstream. Supports:
+/// - Multiple program streams
+/// - Program Association Table (PAT) generation
+/// - Program Map Table (PMT) generation
+/// - Optional HLS segmentation
 pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
-    parser: TSPacketParser,
     stream_writer: io::BufWriter<W>,
-    streams: Vec<Box<dyn av::CodecData>>,
+    streams: Vec<Box<dyn CodecDataExt>>,
     continuity_counters: Vec<u8>,
     current_pcr: Duration,
     last_pcr: Option<Duration>,
@@ -51,9 +63,13 @@ pub struct TSMuxer<W: AsyncWrite + Unpin + Send> {
 }
 
 impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
+    /// Creates a new Transport Stream muxer writing to the specified output.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - The output writer where the TS data will be written
     pub fn new(writer: W) -> Self {
         Self {
-            parser: TSPacketParser::new(),
             stream_writer: io::BufWriter::new(writer),
             streams: Vec::new(),
             continuity_counters: Vec::new(),
@@ -68,31 +84,41 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
         }
     }
 
+    /// Configures HLS segmentation for this muxer.
+    ///
+    /// # Arguments
+    ///
+    /// * `segmenter` - The HLS segmenter configuration
     pub fn with_hls(mut self, segmenter: HLSSegmenter) -> Self {
         self.hls_segmenter = Some(segmenter);
         self
     }
 
+    /// Marks the stream as discontinuous, affecting PCR and segment timing.
     pub fn mark_discontinuity(&mut self) {
         self.stream_discontinuity = true;
     }
 
+    /// Resets the Program Clock Reference timing.
     pub fn reset_pcr(&mut self) {
         self.current_pcr = Duration::ZERO;
         self.last_pcr = None;
         self.last_pcr_write = Duration::ZERO;
     }
 
-    pub(crate) fn get_stream_pid(&self, index: usize) -> u16 {
+    /// Gets the PID for a stream index.
+    fn get_stream_pid(&self, index: usize) -> u16 {
         0x100 + (index as u16)
     }
 
-    pub(crate) fn get_next_continuity_counter(&mut self, stream_index: usize) -> u8 {
+    /// Gets and increments the continuity counter for a stream.
+    fn get_next_continuity_counter(&mut self, stream_index: usize) -> u8 {
         let counter = &mut self.continuity_counters[stream_index];
         *counter = (*counter + 1) & 0x0F;
         *counter
     }
 
+    /// Updates the Program Clock Reference with new timing information.
     fn update_pcr(&mut self, packet_time: Option<Duration>) {
         if let Some(time) = packet_time {
             if let Some(last_pcr) = self.last_pcr {
@@ -103,16 +129,12 @@ impl<W: AsyncWrite + Unpin + Send> TSMuxer<W> {
             self.current_pcr = time;
         }
     }
-
-    fn needs_pcr(&self) -> bool {
-        self.current_pcr >= self.last_pcr_write + PCR_INTERVAL
-    }
 }
 
 #[async_trait::async_trait]
 impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
-    async fn write_header(&mut self, streams: &[Box<dyn av::CodecData>]) -> Result<()> {
-        println!("Writing TS header with {} streams", streams.len());
+    /// Writes the initial Transport Stream headers including PAT and PMT.
+    async fn write_header(&mut self, streams: &[Box<dyn CodecDataExt>]) -> Result<()> {
         // Initialize PAT
         self.pat.entries.clear();
         self.pat.entries.push(PATEntry {
@@ -239,23 +261,19 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
             pmt_buf.put_u8(0xFF);
         }
 
-        println!("  Writing PMT packet, first byte: 0x{:02x}", pmt_buf[0]);
         self.stream_writer.write_all(&pmt_buf).await?;
         self.stream_writer.flush().await?;
 
         Ok(())
     }
 
+    /// Writes a media packet as one or more TS packets.
     async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         // Split packet data into TS packets
         let payload = &packet.data;
         let mut offset = 0;
         
-        println!("Writing packet: stream_index={}, payload_len={}, pts={:?}",
-                packet.stream_index, payload.len(), packet.pts);
-        
         while offset < payload.len() {
-            println!("  Writing TS packet at offset {}", offset);
             let mut ts_packet = BytesMut::with_capacity(TS_PACKET_SIZE);
                 
             // Calculate sizes
@@ -264,9 +282,6 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
             let max_payload_size = TS_PACKET_SIZE - header_size - adaptation_field_size;
             let payload_size = std::cmp::min(max_payload_size, payload.len() - offset);
             let stuffing_size = TS_PACKET_SIZE - header_size - adaptation_field_size - payload_size;
-                
-            println!("    Sizes: header={}, adapt={}, payload={}, stuff={}",
-                    header_size, adaptation_field_size, payload_size, stuffing_size);
 
             // Write TS header
             let header = TSHeader {
@@ -281,11 +296,6 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
                 continuity_counter: self.get_next_continuity_counter(packet.stream_index),
             };
             header.write_to(&mut ts_packet)?;
-                
-            // Verify sync byte was written correctly
-            if ts_packet[0] != 0x47 {
-                println!("    WARNING: First byte is not 0x47, got 0x{:02x}", ts_packet[0]);
-            }
 
             // Write adaptation field if needed
             if header.adaptation_field_exists {
@@ -303,7 +313,6 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
             ts_packet.extend_from_slice(&payload[offset..offset + payload_size]);
                 
             // Write packet
-            println!("    Writing TS packet, first byte: 0x{:02x}", ts_packet[0]);
             self.stream_writer.write_all(&ts_packet).await?;
             offset += payload_size;
         }
@@ -317,33 +326,26 @@ impl<W: AsyncWrite + Unpin + Send> FormatMuxer for TSMuxer<W> {
         Ok(())
     }
 
+    /// Finalizes the Transport Stream and writes any pending data.
     async fn write_trailer(&mut self) -> Result<()> {
         if let Some(segmenter) = &mut self.hls_segmenter {
-            let current_time = self.current_pcr; // Use current PCR time for segment end
-            if let Err(e) = segmenter.finish_segment(current_time).await {
-                println!("Error finishing last segment: {}", e); // Log error but continue
-            }
+            let current_time = self.current_pcr;
+            segmenter.finish_segment(current_time).await?;
 
             let playlist_path = segmenter.get_output_dir().join("playlist.m3u8");
             let playlist_file = File::create(playlist_path).await?;
             let mut playlist_writer = io::BufWriter::new(playlist_file);
 
-            if let Err(e) = segmenter.write_playlist(&mut playlist_writer).await {
-                println!("Error writing playlist: {}", e); // Log error but continue
-            }
-            if let Err(e) = segmenter.write_master_playlist(&mut playlist_writer).await {
-                println!("Error writing master playlist: {}", e); // Log error but continue
-            }
-
-            if let Err(e) = playlist_writer.flush().await {
-                println!("Error flushing playlist writer: {}", e); // Log error but continue
-            }
+            segmenter.write_playlist(&mut playlist_writer).await?;
+            segmenter.write_master_playlist(&mut playlist_writer).await?;
+            playlist_writer.flush().await?;
         }
 
         self.stream_writer.flush().await?;
         Ok(())
     }
 
+    /// Flushes any buffered data to the output.
     async fn flush(&mut self) -> Result<()> {
         self.stream_writer.flush().await?;
         Ok(())
@@ -356,7 +358,7 @@ mod tests {
     use std::io::Cursor;
     use tokio::runtime::Runtime;
 
-    #[derive(Clone)]
+    #[derive(Debug, Clone)]
     struct TestCodec;
 
     impl av::CodecData for TestCodec {
@@ -377,6 +379,9 @@ mod tests {
         }
     }
 
+    // CodecDataExt is automatically implemented for TestCodec since it implements
+    // both CodecData and Clone (via #[derive(Clone)])
+
     #[test]
     fn test_ts_muxer_basic() {
         let rt = Runtime::new().unwrap();
@@ -384,11 +389,9 @@ mod tests {
             let buf = Vec::new();
             let mut muxer = TSMuxer::new(Cursor::new(buf));
 
-            // Cast TestCodec as CodecData instead of CodecDataExt
-            let streams = vec![Box::new(TestCodec) as Box<dyn av::CodecData>];
+            let streams = vec![Box::new(TestCodec) as Box<dyn CodecDataExt>];
             muxer.write_header(&streams).await.unwrap();
 
-            // Create test packet
             let packet = Packet::new(bytes::Bytes::from(vec![0; 184]))
                 .with_stream_index(0)
                 .with_pts(0);

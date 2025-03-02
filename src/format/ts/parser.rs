@@ -1,19 +1,37 @@
 use super::types::*;
 use crate::error::{Result, VdkError};
-use bytes::BytesMut;
 
-#[allow(dead_code)]
-pub struct TSPacketParser {
-    buffer: BytesMut,
-}
+/// Parser for MPEG Transport Stream (TS) packets.
+///
+/// The parser handles the low-level details of TS packet parsing, including:
+/// - Transport Stream packet headers
+/// - Adaptation fields
+/// - Program Association Table (PAT)
+/// - Program Map Table (PMT)
+#[derive(Debug)]
+pub struct TSPacketParser {}
 
 impl TSPacketParser {
+    /// Creates a new TS packet parser.
     pub fn new() -> Self {
-        Self {
-            buffer: BytesMut::new(),
-        }
+        Self {}
     }
 
+    /// Parses a TS packet header from raw data.
+    ///
+    /// The header contains essential information about the packet including:
+    /// - Synchronization byte (should be 0x47)
+    /// - Packet Identifier (PID)
+    /// - Continuity counter
+    /// - Various flags for transport error, payload start, etc.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw packet data starting with the sync byte
+    ///
+    /// # Returns
+    ///
+    /// The parsed TS header or an error if the data is invalid
     pub fn parse_header(&self, data: &[u8]) -> Result<TSHeader> {
         if data.len() < TS_HEADER_SIZE {
             return Err(VdkError::InvalidData("TS packet too short".into()));
@@ -36,6 +54,10 @@ impl TSPacketParser {
         })
     }
 
+    /// Parses the adaptation field if present in the packet.
+    ///
+    /// The adaptation field contains timing information (PCR/OPCR) and other
+    /// control flags. It's optional and may not be present in every packet.
     pub fn parse_adaptation_field(
         &self,
         data: &[u8],
@@ -111,15 +133,12 @@ impl TSPacketParser {
 
         if field.private_data_flag {
             if pos + 1 > adaptation_field_length + offset {
-                return Err(VdkError::InvalidData(
-                    "Private data length byte missing".into(),
-                ));
+                return Err(VdkError::InvalidData("Private data length byte missing".into()));
             }
             let private_data_length = data[pos] as usize;
             pos += 1;
             let remaining = adaptation_field_length - (pos - offset);
             if private_data_length > remaining {
-                // Invalid private data length but try to continue parsing
                 field.private_data = None;
                 return Ok(Some(field));
             }
@@ -129,8 +148,8 @@ impl TSPacketParser {
         Ok(Some(field))
     }
 
+    /// Parses a Program Association Table (PAT) section.
     pub fn parse_pat(&self, data: &[u8], _offset: usize, _length: usize) -> Result<PAT> {
-        println!("Parsing PAT: len={}", data.len());
         let mut pat = PAT::new();
         
         if data.len() < 8 {
@@ -143,7 +162,6 @@ impl TSPacketParser {
 
         let section_length = ((data[1] as usize & 0x0F) << 8) | data[2] as usize;
         let total_length = 3 + section_length;
-        println!("  PAT section length: {}", section_length);
 
         if data.len() < total_length {
             return Err(VdkError::InvalidData("PAT data shorter than section length".into()));
@@ -157,8 +175,6 @@ impl TSPacketParser {
             let program_number = ((data[pos] as u16) << 8) | data[pos + 1] as u16;
             let pid = ((data[pos + 2] as u16 & 0x1F) << 8) | data[pos + 3] as u16;
             
-            println!("  Program: number={}, pid=0x{:04x}", program_number, pid);
-            
             pat.entries.push(PATEntry {
                 program_number,
                 network_pid: if program_number == 0 { pid } else { 0 },
@@ -170,41 +186,31 @@ impl TSPacketParser {
         Ok(pat)
     }
 
+    /// Parses a Program Map Table (PMT) section.
     pub fn parse_pmt(&self, data: &[u8], _offset: usize, _length: usize) -> Result<PMT> {
-        println!("Parsing PMT: len={}", data.len());
         let mut pmt = PMT::new();
 
         if data.len() < 7 {
             return Err(VdkError::InvalidData("PMT section too short".into()));
         }
 
-        // Verify table ID
         if data[0] != TABLE_ID_PMT {
             return Err(VdkError::InvalidData(format!("Invalid PMT table ID: 0x{:02x}", data[0])));
         }
 
-        // Get section length
         let section_length = ((data[1] as usize & 0x0F) << 8) | data[2] as usize;
         let total_length = 3 + section_length;
-        println!("  PMT section length: {}", section_length);
 
         if data.len() < total_length {
             return Err(VdkError::InvalidData("PMT data shorter than section length".into()));
         }
 
-        // Skip transport stream ID (2 bytes)
-        // Skip version and current_next indicator (1 byte)
-        // Skip section number and last section number (2 bytes)
         let mut pos = 8;
 
-        // Parse PCR PID
         pmt.pcr_pid = ((data[pos] as u16 & 0x1F) << 8) | data[pos + 1] as u16;
-        println!("  PCR PID: 0x{:04x}", pmt.pcr_pid);
         pos += 2;
 
-        // Parse program info
         let program_info_length = ((data[pos] as usize & 0x0F) << 8) | data[pos + 1] as usize;
-        println!("  Program info length: {}", program_info_length);
         pos += 2;
 
         if program_info_length > 0 {
@@ -212,19 +218,14 @@ impl TSPacketParser {
                 return Err(VdkError::InvalidData("Program info extends beyond section".into()));
             }
             pmt.program_descriptors = self.parse_descriptors(&data[pos..pos + program_info_length])?;
-            println!("  Parsed {} program descriptors", pmt.program_descriptors.len());
             pos += program_info_length;
         }
 
-        // Parse elementary streams until CRC
         while pos + 5 <= total_length - 4 {
             let stream_type = data[pos];
             let elementary_pid = ((data[pos + 1] as u16 & 0x1F) << 8) | data[pos + 2] as u16;
             let es_info_length = ((data[pos + 3] as usize & 0x0F) << 8) | data[pos + 4] as usize;
             pos += 5;
-
-            println!("  Stream: type=0x{:02x}, pid=0x{:04x}, info_len={}", 
-                    stream_type, elementary_pid, es_info_length);
 
             if pos + es_info_length > total_length - 4 {
                 return Err(VdkError::InvalidData("ES info extends beyond section".into()));

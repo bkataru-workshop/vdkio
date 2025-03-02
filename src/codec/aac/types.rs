@@ -1,8 +1,13 @@
+/// AAC Profile types as defined in ISO/IEC 13818-7 (MPEG-2 AAC) and ISO/IEC 14496-3 (MPEG-4 AAC)
 #[derive(Debug, Clone, Copy)]
 pub enum ProfileType {
+    /// Main profile - most complete but computationally intensive
     Main = 0,
+    /// Low Complexity profile - most widely used
     LC = 1,
+    /// Scalable Sampling Rate profile
     SSR = 2,
+    /// Long Term Prediction profile
     LTP = 3,
 }
 
@@ -18,11 +23,16 @@ impl From<u8> for ProfileType {
     }
 }
 
+/// Configuration parameters for AAC audio streams
 #[derive(Debug, Clone)]
 pub struct AACConfig {
+    /// AAC profile type (Main, LC, SSR, or LTP)
     pub profile: ProfileType,
+    /// Index representing sample rate (0=96000 Hz, 1=88200 Hz, etc.)
     pub sample_rate_index: u8,
+    /// Number of channels (1=mono, 2=stereo, etc.)
     pub channel_configuration: u8,
+    /// Number of samples per frame (typically 1024)
     pub frame_length: u16,
 }
 
@@ -37,30 +47,58 @@ impl Default for AACConfig {
     }
 }
 
+/// Audio Data Transport Stream (ADTS) header structure as defined in ISO/IEC 13818-7
+/// Contains frame synchronization and configuration information for AAC audio frames
 #[derive(Debug)]
 pub struct ADTSHeader {
-    pub sync_word: u32,            // 12 bits
-    pub id: u8,                    // 1 bit, 0=MPEG-4, 1=MPEG-2
-    pub layer: u8,                 // 2 bits
-    pub protection_absent: bool,   // 1 bit
-    pub profile: ProfileType,      // 2 bits
-    pub sample_rate_index: u8,     // 4 bits
-    pub private_bit: bool,         // 1 bit
-    pub channel_configuration: u8, // 3 bits
-    pub original_copy: bool,       // 1 bit
-    pub home: bool,                // 1 bit
-    pub copyright_id_bit: bool,    // 1 bit
-    pub copyright_id_start: bool,  // 1 bit
-    pub frame_length: u16,         // 13 bits
-    pub buffer_fullness: u16,      // 11 bits
-    pub number_of_raw_blocks: u8,  // 2 bits
+    /// Synchronization word, always 0xFFF (12 bits)
+    pub sync_word: u32,
+    /// MPEG version ID, 0=MPEG-4, 1=MPEG-2 (1 bit)
+    pub id: u8,
+    /// MPEG layer, always 0 for AAC (2 bits)
+    pub layer: u8,
+    /// CRC protection flag, true if CRC is absent (1 bit)
+    pub protection_absent: bool,
+    /// AAC profile type (2 bits)
+    pub profile: ProfileType,
+    /// Sample rate index (4 bits)
+    pub sample_rate_index: u8,
+    /// Private bit, can be used freely (1 bit)
+    pub private_bit: bool,
+    /// Channel configuration (3 bits)
+    pub channel_configuration: u8,
+    /// Original/copy flag (1 bit)
+    pub original_copy: bool,
+    /// Home flag (1 bit)
+    pub home: bool,
+    /// Copyright ID bit (1 bit)
+    pub copyright_id_bit: bool,
+    /// Copyright ID start bit (1 bit)
+    pub copyright_id_start: bool,
+    /// Length of frame including header in bytes (13 bits)
+    pub frame_length: u16,
+    /// Buffer fullness value (11 bits)
+    pub buffer_fullness: u16,
+    /// Number of AAC frames in ADTS frame minus 1 (2 bits)
+    pub number_of_raw_blocks: u8,
 }
 
 impl ADTSHeader {
+    /// Checks if the sync word is valid (equals 0xFFF)
+    ///
+    /// # Returns
+    ///
+    /// `true` if the sync word is valid, `false` otherwise
     pub fn sync_word_valid(&self) -> bool {
         self.sync_word == 0xFFF
     }
 
+    /// Gets the actual sample rate in Hz from the sample rate index
+    ///
+    /// # Returns
+    ///
+    /// * `Some(rate)` - The sample rate in Hz if the index is valid (96000, 88200, etc.)
+    /// * `None` - If the sample rate index is invalid
     pub fn sample_rate(&self) -> Option<u32> {
         match self.sample_rate_index {
             0 => Some(96000),
@@ -80,6 +118,15 @@ impl ADTSHeader {
         }
     }
 
+    /// Converts the ADTS header to its binary representation following ISO/IEC 13818-7
+    ///
+    /// Creates a 7-byte array containing the ADTS header fields packed according to the specification.
+    /// Each field is positioned at its correct bit location within the header.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<u8>)` - A 7-byte vector containing the packed ADTS header
+    /// * `Err(_)` - If there was an error during conversion
     pub fn to_bytes(&self) -> crate::Result<Vec<u8>> {
         let mut bytes = vec![0u8; 7]; // ADTS header is 7 bytes
 
@@ -121,13 +168,25 @@ impl ADTSHeader {
     }
 }
 
+/// An AAC frame containing configuration and audio data
+///
+/// Represents a complete AAC audio frame that can be decoded to produce audio samples.
+/// Each frame contains its own configuration to support dynamic changes in audio format.
 #[derive(Debug, Clone)]
 pub struct AACFrame {
+    /// Configuration parameters for this frame including profile, sample rate, and channels
     pub config: AACConfig,
+    /// Raw AAC frame data (excluding ADTS header if present)
     pub data: Vec<u8>,
 }
 
 impl AACFrame {
+    /// Creates a new AAC frame with the given configuration and data
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration parameters for this frame
+    /// * `data` - Raw AAC frame data (should not include ADTS header)
     pub fn new(config: AACConfig, data: Vec<u8>) -> Self {
         Self { config, data }
     }

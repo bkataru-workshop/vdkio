@@ -123,7 +123,18 @@ impl<'a> BitReader<'a> {
         Ok(sign * magnitude)
     }
 
-    /// Skips n bits in the stream.
+    /// Skips n bits in the stream without reading them
+    ///
+    /// Useful for skipping padding or reserved bits in the bitstream.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - Number of bits to skip
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the bits were successfully skipped
+    /// * `Err(_)` - If end of data is reached before skipping all bits
     pub fn skip_bits(&mut self, n: u32) -> Result<()> {
         let n = n as usize;
         for _ in 0..n {
@@ -141,17 +152,39 @@ impl<'a> BitReader<'a> {
         Ok(())
     }
 
-    /// Returns number of bits available to read.
+    /// Returns number of bits available to read from current position
+    ///
+    /// Calculates remaining bits based on:
+    /// - Number of complete bytes remaining
+    /// - Number of bits remaining in current byte
+    ///
+    /// # Returns
+    ///
+    /// Total number of bits that can still be read from the stream
     pub fn available_bits(&self) -> usize {
         (self.data.len() - self.byte_offset) * 8 - self.bit_offset as usize
     }
 }
 
 #[cfg(test)]
+/// Test utilities for encoding and verifying exp-Golomb codes
+/// Used to generate test vectors for validating the BitReader implementation
 mod test_utils {
-    // Test utilities for encoding exp-Golomb codes
-
-    /// Encodes a single value as exp-Golomb code per H.264/H.265 spec.
+    /// Encodes an unsigned integer as an exp-Golomb code following H.264/H.265 spec
+    ///
+    /// Creates a byte vector containing the encoded value according to the specification:
+    /// 1. Count leading zeros M needed to represent (value + 1)
+    /// 2. Write M zeros followed by 1
+    /// 3. Write value + 1 - 2^M in M bits
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The unsigned integer to encode
+    ///
+    /// # Returns
+    ///
+    /// A vector of bytes containing the encoded value. Only the first byte is
+    /// guaranteed to be filled, remaining bytes are padding.
     pub fn encode_golomb(value: u32) -> Vec<u8> {
         if value == 0 {
             return vec![0b10000000];

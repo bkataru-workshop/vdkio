@@ -1,6 +1,9 @@
 /target
 .aider*
 
+# Configuration files with sensitive information
+config.toml
+vdkio_config.toml
 .env
 
 output/

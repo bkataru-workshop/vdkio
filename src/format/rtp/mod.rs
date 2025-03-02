@@ -1,37 +1,120 @@
+//! # Real-time Transport Protocol (RTP) Implementation
+//!
+//! This module provides a complete implementation of RTP (Real-time Transport Protocol)
+//! functionality, including:
+//!
+//! - RTP packet parsing and creation
+//! - Jitter buffer for handling out-of-order packets
+//! - Sequence number management
+//! - Support for RTP extensions and CSRC
+//!
+//! ## Example: Creating and Parsing RTP Packets
+//!
+//! ```rust
+//! use vdkio::format::rtp::RTPPacket;
+//! use bytes::Bytes;
+//!
+//! // Create a new RTP packet
+//! let payload = Bytes::from(vec![1, 2, 3, 4]);
+//! let packet = RTPPacket::new(
+//!     96,             // Payload type
+//!     1000,          // Sequence number
+//!     90000,         // Timestamp
+//!     0x12345678,    // SSRC
+//!     true,          // Marker bit
+//!     payload,
+//! );
+//!
+//! // Parse raw RTP data
+//! let raw_data = vec![0u8; 1024]; // Example RTP packet data
+//! if let Ok(parsed) = RTPPacket::parse(&raw_data) {
+//!     println!("Received RTP packet with seq={}", parsed.sequence_number);
+//! }
+//! ```
+//!
+//! ## Example: Using Jitter Buffer
+//!
+//! ```rust
+//! use vdkio::format::rtp::{JitterBuffer, RTPPacket};
+//! use bytes::Bytes;
+//!
+//! // Create jitter buffer with size 32 packets
+//! let mut jitter = JitterBuffer::new(32);
+//!
+//! // Add packets (potentially out of order)
+//! let packet = RTPPacket::new(96, 1000, 90000, 0x12345678, false, Bytes::from(vec![1, 2, 3]));
+//! jitter.push(packet).unwrap();
+//!
+//! // Get packets in sequence
+//! while let Some(packet) = jitter.pop() {
+//!     println!("Processing packet {}", packet.sequence_number);
+//! }
+//! ```
+
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::fmt;
 use thiserror::Error;
 
+/// Errors that can occur during RTP operations
 #[derive(Debug, Error)]
 pub enum RTPError {
+    /// The packet data is malformed or incomplete
     #[error("Invalid RTP packet")]
     InvalidPacket,
+    
+    /// The jitter buffer is full
     #[error("Buffer overflow")]
     BufferOverflow,
+    
+    /// Sequence number wrapped around
     #[error("Sequence number wrapped")]
     SequenceWrapped,
 }
 
+/// Specialized Result type for RTP operations
 pub type Result<T> = std::result::Result<T, RTPError>;
 
+/// An RTP packet containing media data and metadata
 #[derive(Debug, Clone)]
 pub struct RTPPacket {
+    /// RTP version (should be 2)
     pub version: u8,
+    /// Padding flag
     pub padding: bool,
+    /// Header extension flag
     pub extension: bool,
+    /// CSRC count
     pub csrc_count: u8,
+    /// Marker bit
     pub marker: bool,
+    /// Payload type identifier
     pub payload_type: u8,
+    /// Packet sequence number
     pub sequence_number: u16,
+    /// Media timestamp
     pub timestamp: u32,
+    /// Synchronization source identifier
     pub ssrc: u32,
+    /// Contributing source identifiers
     pub csrc: Vec<u32>,
+    /// Optional header extension (profile-specific ID, data)
     pub extension_data: Option<(u16, Bytes)>,
+    /// Packet payload data
     pub payload: Bytes,
 }
 
 impl RTPPacket {
+    /// Creates a new RTP packet with the specified parameters
+    ///
+    /// # Arguments
+    ///
+    /// * `payload_type` - RTP payload type number
+    /// * `sequence_number` - 16-bit sequence number
+    /// * `timestamp` - 32-bit timestamp
+    /// * `ssrc` - 32-bit synchronization source identifier
+    /// * `marker` - Marker bit
+    /// * `payload` - Media payload data
     pub fn new(
         payload_type: u8,
         sequence_number: u16,
@@ -56,6 +139,22 @@ impl RTPPacket {
         }
     }
 
+    /// Parses an RTP packet from raw bytes
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw packet data
+    ///
+    /// # Returns
+    ///
+    /// The parsed RTP packet
+    ///
+    /// # Errors
+    ///
+    /// Returns `RTPError` if:
+    /// - The packet is shorter than 12 bytes
+    /// - The version is not 2
+    /// - The packet is malformed
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 12 {
             return Err(RTPError::InvalidPacket);
@@ -141,10 +240,15 @@ impl RTPPacket {
     }
 }
 
+/// A buffer for handling out-of-order RTP packets
 pub struct JitterBuffer {
+    /// Ordered map of sequence numbers to packets
     packets: BTreeMap<u16, RTPPacket>,
+    /// Minimum sequence number in buffer
     min_seq: u16,
+    /// Maximum sequence number in buffer
     max_seq: u16,
+    /// Maximum number of packets to store
     buffer_size: usize,
 }
 
@@ -160,6 +264,11 @@ impl fmt::Debug for JitterBuffer {
 }
 
 impl JitterBuffer {
+    /// Creates a new jitter buffer with the specified size
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer_size` - Maximum number of packets to store
     pub fn new(buffer_size: usize) -> Self {
         Self {
             packets: BTreeMap::new(),
@@ -169,6 +278,17 @@ impl JitterBuffer {
         }
     }
 
+    /// Adds a packet to the jitter buffer
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - The RTP packet to add
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The buffer is full
+    /// - The sequence number wrapped around
     pub fn push(&mut self, packet: RTPPacket) -> Result<()> {
         let seq = packet.sequence_number;
 
@@ -201,6 +321,7 @@ impl JitterBuffer {
         Ok(())
     }
 
+    /// Retrieves the next sequential packet from the buffer
     pub fn pop(&mut self) -> Option<RTPPacket> {
         if let Some((&seq, _)) = self.packets.first_key_value() {
             if seq == self.min_seq {
@@ -212,10 +333,12 @@ impl JitterBuffer {
         None
     }
 
+    /// Returns true if the buffer contains no packets
     pub fn is_empty(&self) -> bool {
         self.packets.is_empty()
     }
 
+    /// Returns the number of packets in the buffer
     pub fn len(&self) -> usize {
         self.packets.len()
     }

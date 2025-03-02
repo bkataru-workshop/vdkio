@@ -1,26 +1,61 @@
 use std::collections::HashMap;
 
+/// Represents RTSP transport configuration and capabilities.
+///
+/// This struct encapsulates all transport-related information for an RTSP session,
+/// including protocol type, ports for RTP/RTCP, casting type, and additional
+/// transport parameters.
 #[derive(Debug, Clone)]
 pub struct TransportInfo {
+    /// Transport protocol identifier (e.g., "RTP/AVP")
     pub protocol: String,
+    /// Type of network distribution (unicast or multicast)
     pub cast_type: CastType,
+    /// Client's RTP receiving port
     pub client_port_rtp: Option<u16>,
+    /// Client's RTCP receiving port
     pub client_port_rtcp: Option<u16>,
+    /// Server's RTP sending port
     pub server_port_rtp: Option<u16>,
+    /// Server's RTCP sending port
     pub server_port_rtcp: Option<u16>,
+    /// Synchronization source identifier
     pub ssrc: Option<u32>,
+    /// Transport mode (e.g., "PLAY", "RECORD")
     pub mode: Option<String>,
+    /// Additional transport parameters not covered by other fields
     pub extra_params: HashMap<String, Option<String>>,
 }
 
+/// Specifies the type of network distribution for RTSP streams.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CastType {
+    /// Point-to-point delivery between client and server
     Unicast,
+    /// One-to-many delivery to multiple clients
     Multicast,
 }
 
 impl TransportInfo {
-    /// Create a new RTP/AVP transport with client ports
+    /// Creates a new RTP/AVP transport configuration with specified client ports.
+    ///
+    /// This is a convenience constructor for creating a unicast RTP/AVP transport
+    /// with client ports configured. This is the most common transport configuration
+    /// for RTSP clients.
+    ///
+    /// # Arguments
+    ///
+    /// * `ports` - A tuple of (RTP port, RTCP port) for the client
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vdkio::format::rtsp::transport::TransportInfo;
+    ///
+    /// let transport = TransportInfo::new_rtp_avp((5000, 5001));
+    /// assert_eq!(transport.client_port_rtp, Some(5000));
+    /// assert_eq!(transport.client_port_rtcp, Some(5001));
+    /// ```
     pub fn new_rtp_avp(ports: (u16, u16)) -> Self {
         Self {
             protocol: "RTP/AVP".to_string(),
@@ -35,7 +70,28 @@ impl TransportInfo {
         }
     }
 
-    /// Parse a transport string into TransportInfo
+    /// Parses a transport header string into a TransportInfo object.
+    ///
+    /// This method parses transport specifications according to RFC 2326,
+    /// handling both required and optional transport parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `transport` - The transport header string to parse
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(TransportInfo)` if parsing was successful, `None` otherwise
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vdkio::format::rtsp::transport::TransportInfo;
+    ///
+    /// let transport = "RTP/AVP;unicast;client_port=5000-5001";
+    /// let info = TransportInfo::parse(transport).unwrap();
+    /// assert_eq!(info.protocol, "RTP/AVP");
+    /// ```
     pub fn parse(transport: &str) -> Option<Self> {
         let mut info = TransportInfo {
             protocol: String::new(),
@@ -97,7 +153,25 @@ impl TransportInfo {
         Some(info)
     }
 
-    /// Generate a transport header string
+    /// Formats the transport information into a valid transport header string.
+    ///
+    /// This method generates a transport specification string that can be used
+    /// in RTSP headers, including all configured parameters.
+    ///
+    /// # Returns
+    ///
+    /// A string containing the formatted transport specification
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vdkio::format::rtsp::transport::TransportInfo;
+    ///
+    /// let transport = TransportInfo::new_rtp_avp((5000, 5001));
+    /// let transport_str = transport.to_string();
+    /// assert!(transport_str.contains("RTP/AVP"));
+    /// assert!(transport_str.contains("client_port=5000-5001"));
+    /// ```
     pub fn to_string(&self) -> String {
         let mut parts = vec![self.protocol.clone()];
 

@@ -1,392 +1,459 @@
-use super::{parser::TSPacketParser, types::*};
+use super::parser::TSPacketParser;
+use super::types::*;
 use crate::av::{self, CodecData, CodecType, Packet};
-use crate::error::{Result, VdkError};
-use crate::format;
-use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
-use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use crate::error::Result;
+use crate::format::Demuxer as FormatDemuxer;
+use crate::utils::crc::Crc32Mpeg2;
+use bytes::Bytes;
+use std::collections::HashMap;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
-#[derive(Clone)]
-struct TSCodecData {
+/// MPEG Transport Stream demuxer.
+///
+/// This demuxer extracts elementary streams from MPEG-TS container format.
+/// It supports:
+/// - PAT/PMT parsing for stream information
+/// - PES packet extraction and reassembly
+/// - PCR timing recovery
+pub struct TSDemuxer<R: AsyncRead + Unpin + Send> {
+    reader: R,
+    parser: TSPacketParser,
+    streams: HashMap<u16, StreamInfo>,
+    pmt_pid: Option<u16>,
+    pmt: Option<PMT>,
+}
+
+/// Information about individual elementary streams.
+#[derive(Debug)]
+struct StreamInfo {
+    /// Index in the stream list
+    stream_index: usize,
+    /// Stream configuration data (codec info, etc.)
+    config: Option<StreamCodecData>,
+    /// Incomplete PES packet being assembled
+    pes_buffer: Option<PESBuilder>,
+}
+
+/// Codec information for a stream.
+#[derive(Debug, Clone)]
+struct StreamCodecData {
+    /// Type of codec (H264, AAC, etc.)
     codec_type: CodecType,
+    /// Width in pixels for video codecs
     width: Option<u32>,
+    /// Height in pixels for video codecs
     height: Option<u32>,
+    /// Codec-specific extra data
     extra_data: Option<Vec<u8>>,
 }
 
-#[async_trait]
-impl CodecData for TSCodecData {
+impl CodecData for StreamCodecData {
     fn codec_type(&self) -> CodecType {
         self.codec_type
     }
-
     fn width(&self) -> Option<u32> {
         self.width
     }
-
     fn height(&self) -> Option<u32> {
         self.height
     }
-
     fn extra_data(&self) -> Option<&[u8]> {
         self.extra_data.as_deref()
     }
 }
 
-#[derive(Default)]
-struct PESState {
-    buffer: BytesMut,
-    stream_id: u8,
-    packet_length: usize,
-    has_length: bool,
+// StreamCodecData implements Clone and CodecData, so it gets CodecDataExt through
+// the blanket implementation in av::mod.rs
+
+/// Helper for assembling PES packets from TS packets.
+#[derive(Debug)]
+struct PESBuilder {
+    /// PTS from PES header
     pts: Option<i64>,
+    /// Size of complete PES packet
+    size: Option<usize>,
+    /// Accumulated data
+    data: Vec<u8>,
 }
 
-impl PESState {
+impl PESBuilder {
     fn new() -> Self {
         Self {
-            buffer: BytesMut::new(),
-            stream_id: 0,
-            packet_length: 0,
-            has_length: false,
             pts: None,
+            size: None,
+            data: Vec::new(),
         }
     }
 
-    fn reset(&mut self) {
-        self.buffer.clear();
-        self.stream_id = 0;
-        self.packet_length = 0;
-        self.has_length = false;
-        self.pts = None;
+    /// Adds payload data to the packet being built.
+    fn push_data(&mut self, data: &[u8]) {
+        self.data.extend_from_slice(data);
     }
 
-    fn packet_complete(&self) -> bool {
-        if !self.has_length {
-            return false;
-        }
-        self.buffer.len() >= self.packet_length
+    /// Sets PTS value from PES header.
+    fn set_pts(&mut self, pts: i64) {
+        self.pts = Some(pts);
     }
 
-    fn take_packet(&mut self) -> Option<(Bytes, i64)> {
-        if self.packet_complete() {
-            let pts = self.pts.unwrap_or(0);
-            let data = if self.packet_length > 0 {
-                self.buffer.split_to(self.packet_length).freeze()
-            } else {
-                self.buffer.split().freeze()
-            };
-            self.reset();
-            Some((data, pts))
+    /// Sets expected packet size from PES header.
+    fn set_size(&mut self, size: usize) {
+        self.size = Some(size);
+    }
+
+    /// Returns whether packet is complete.
+    fn is_complete(&self) -> bool {
+        if let Some(size) = self.size {
+            self.data.len() >= size
         } else {
-            None
+            false
         }
+    }
+
+    /// Takes the completed packet data.
+    fn take_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
     }
 }
 
-pub struct TSDemuxer<R: AsyncRead + Unpin + Send> {
-    reader: BufReader<R>,
-    parser: TSPacketParser,
-    pat: Option<PAT>,
-    pmt: Option<PMT>,
-    streams: Vec<Arc<TSCodecData>>,
-    pids_to_stream_indices: Vec<(u16, usize)>,
-    pes_states: Vec<PESState>,
+/// Parse PTS value from PES header.
+fn parse_pts(data: &[u8]) -> Option<i64> {
+    if data.len() < 14 || (data[7] & 0x80) == 0 {
+        return None;
+    }
+
+    let pts = ((data[9] as i64 & 0x0E) << 29)
+        | ((data[10] as i64) << 22)
+        | ((data[11] as i64 & 0xFE) << 14)
+        | ((data[12] as i64) << 7)
+        | ((data[13] as i64 & 0xFE) >> 1);
+
+    Some(pts)
 }
 
 impl<R: AsyncRead + Unpin + Send> TSDemuxer<R> {
+    /// Creates a new TS demuxer.
     pub fn new(reader: R) -> Self {
         Self {
-            reader: BufReader::new(reader),
+            reader,
             parser: TSPacketParser::new(),
-            pat: None,
+            streams: HashMap::new(),
+            pmt_pid: None,
             pmt: None,
-            streams: Vec::new(),
-            pids_to_stream_indices: Vec::new(),
-            pes_states: Vec::new(),
         }
     }
 
-    fn get_pes_state(&mut self, stream_idx: usize) -> &mut PESState {
-        while self.pes_states.len() <= stream_idx {
-            self.pes_states.push(PESState::new());
-        }
-        &mut self.pes_states[stream_idx]
-    }
-
-    fn reset_pes_states(&mut self) {
-        self.pes_states.clear();
-    }
-
-    async fn read_ts_packet(&mut self) -> Result<Option<Packet>> {
-        let mut data = BytesMut::with_capacity(TS_PACKET_SIZE);
-        data.resize(TS_PACKET_SIZE, 0);
-
-        // Read until we find sync byte
-        loop {
-            // Read one byte at a time until we find sync byte
-            let mut sync = [0u8; 1];
-            if let Err(e) = self.reader.read_exact(&mut sync).await {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    return Ok(None);
-                }
-                return Err(VdkError::Io(e));
-            }
-
-            if sync[0] == 0x47 {
-                // Found sync byte, read rest of packet
-                data[0] = sync[0];
-                if let Err(e) = self.reader.read_exact(&mut data[1..]).await {
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                        return Ok(None);
-                    }
-                    return Err(VdkError::Io(e));
-                }
-                break;
-            }
-        }
-
-        println!("Read TS packet: first 4 bytes: {:02x} {:02x} {:02x} {:02x}", data[0], data[1], data[2], data[3]);
-
-        let header = self.parser.parse_header(&data)?;
-        println!("  Parsed TS header: PID=0x{:04x}, payload_start={}, continuity_counter={}",
-                 header.pid, header.payload_unit_start, header.continuity_counter);
-        let adaptation_field = self.parser.parse_adaptation_field(&data, TS_HEADER_SIZE)?;
-        if let Some(ref af) = adaptation_field {
-            println!("  Adaptation field: length={}, pcr_flag={}", af.length, af.pcr_flag);
-        }
-
-        let payload_offset = TS_HEADER_SIZE + adaptation_field.map(|f| f.length + 1).unwrap_or(0);
-        let mut effective_payload = &data[payload_offset..];
-
-        // Handle pointer field for PSI sections (PAT/PMT)
-        if header.payload_unit_start && (header.pid == PID_PAT || header.pid == PID_PMT) {
-            let pointer_field = effective_payload[0] as usize;
-            effective_payload = &effective_payload[1 + pointer_field..];
-        }
-
-        println!("Processing PID 0x{:04x}, payload_start={}, len={}",
-                header.pid, header.payload_unit_start, effective_payload.len());
-
-        match header.pid {
-            PID_PAT => {
-                self.pat = Some(self.parser.parse_pat(effective_payload, 0, effective_payload.len())?);
-                println!("  Parsed PAT with {} entries", self.pat.as_ref().unwrap().entries.len());
-                Ok(None)
-            }
-            PID_PMT => {
-                if let Some(pat) = &self.pat {
-                    for entry in &pat.entries {
-                        if entry.program_number != 0 && header.pid == entry.program_map_pid {
-                            self.pmt = Some(self.parser.parse_pmt(effective_payload, 0, effective_payload.len())?);
-                            println!("  Parsed PMT with {} streams", self.pmt.as_ref().unwrap().elementary_stream_infos.len());
-                            self.setup_streams()?;
-                            self.reset_pes_states(); // Reset PES states when stream setup changes
-                            break;
-                        }
-                    }
-                }
-                Ok(None)
-            }
-            _ => {
-                if let Some(stream_idx) = self.get_stream_index(header.pid) {
-                    println!("  Found stream {} for PID 0x{:04x}", stream_idx, header.pid);
-                    let state = self.get_pes_state(stream_idx);
-
-                    if header.payload_unit_start {
-                        // Return any previous packet first
-                        if let Some((data, pts)) = state.take_packet() {
-                            return Ok(Some(Packet::new(data)
-                                .with_stream_index(stream_idx)
-                                .with_key_flag(true)
-                                .with_pts(pts)));
-                        }
-
-                        // Start new PES packet
-                        if effective_payload.len() < 6 {
-                            println!("  PES header too short");
-                            return Ok(None);
-                        }
-
-                        // Check PES start code
-                        if effective_payload[0] != 0 || effective_payload[1] != 0 || effective_payload[2] != 1 {
-                            println!("  Invalid PES start code: {:02x} {:02x} {:02x}",
-                                   effective_payload[0], effective_payload[1], effective_payload[2]);
-                            return Ok(None);
-                        }
-
-                        state.stream_id = effective_payload[3];
-                        state.packet_length = ((effective_payload[4] as usize) << 8) | effective_payload[5] as usize;
-                        state.has_length = true;
-
-                        println!("  New PES: stream_id=0x{:02x}, length={}", state.stream_id, state.packet_length);
-
-                        // Parse optional PES header fields
-                        let mut payload_offset = 6;
-                        if effective_payload.len() > 9 {
-                            let pts_dts_flags = (effective_payload[7] >> 6) & 0x03;
-                            let header_length = effective_payload[8] as usize;
-
-                            // Parse PTS if present
-                            if pts_dts_flags > 0 && effective_payload.len() >= 9 + header_length {
-                                if (effective_payload[9] & 0xF0) == 0x20 || (effective_payload[9] & 0xF0) == 0x30 {
-                                    let pts = ((effective_payload[9] as i64 & 0x0E) << 29) |
-                                            ((effective_payload[10] as i64) << 22) |
-                                            ((effective_payload[11] as i64 & 0xFE) << 14) |
-                                            ((effective_payload[12] as i64) << 7) |
-                                            ((effective_payload[13] as i64) >> 1);
-                                    state.pts = Some(pts);
-                                    println!("  PTS: {}", pts);
-                                }
-                            }
-                            payload_offset += 3 + header_length;
-                        }
-
-                        // Add payload data after header
-                        if payload_offset < effective_payload.len() {
-                            state.buffer.extend_from_slice(&effective_payload[payload_offset..]);
-                        }
-                    } else {
-                        // Continuation packet
-                        state.buffer.extend_from_slice(effective_payload);
-                    }
-
-                    // Check if we have a complete packet
-                    if let Some((data, pts)) = state.take_packet() {
-                        // Ensure streams are set up before returning packets
-                        if self.streams.is_empty() && self.pmt.is_some() {
-                            self.setup_streams()?;
-                        }
-                        
-                        // Get the codec type for this stream
-                        let is_key = if let Some(pmt) = &self.pmt {
-                            pmt.elementary_stream_infos
-                                .iter()
-                                .find(|info| info.elementary_pid == header.pid)
-                                .map(|info| info.stream_type == STREAM_TYPE_H264 || info.stream_type == STREAM_TYPE_H265)
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-
-                        Ok(Some(Packet::new(data)
-                            .with_stream_index(stream_idx)
-                            .with_key_flag(is_key)
-                            .with_pts(pts)))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    println!("  No stream found for PID 0x{:04x}", header.pid);
-                    Ok(None)
-                }
-            }
-        }
-    }
-
-    fn setup_streams(&mut self) -> Result<()> {
-        if let Some(pmt) = &self.pmt {
-            self.streams.clear();
-            self.pids_to_stream_indices.clear();
-            self.pes_states.clear();
-
-            // First pass: collect all video and audio streams
-            let mut video_streams = Vec::new();
-            let mut audio_streams = Vec::new();
-
-            for info in &pmt.elementary_stream_infos {
-                match info.stream_type {
-                    STREAM_TYPE_H264 | STREAM_TYPE_H265 => video_streams.push(info),
-                    STREAM_TYPE_AAC => audio_streams.push(info),
-                    _ => continue, // Skip unsupported stream types
-                }
-            }
-
-            // Add video streams first
-            for info in video_streams {
-                let codec_type = if info.stream_type == STREAM_TYPE_H264 {
-                    CodecType::H264
-                } else {
-                    CodecType::H265
-                };
-
-                let idx = self.streams.len();
-                self.streams.push(Arc::new(TSCodecData {
-                    codec_type,
-                    width: None,
-                    height: None,
-                    extra_data: None,
-                }));
-                self.pids_to_stream_indices.push((info.elementary_pid, idx));
-                println!("Added video stream: PID=0x{:04x}, index={}", info.elementary_pid, idx);
-            }
-
-            // Then add audio streams
-            for info in audio_streams {
-                let idx = self.streams.len();
-                self.streams.push(Arc::new(TSCodecData {
-                    codec_type: CodecType::AAC,
-                    width: None,
-                    height: None,
-                    extra_data: None,
-                }));
-                self.pids_to_stream_indices.push((info.elementary_pid, idx));
-                println!("Added audio stream: PID=0x{:04x}, index={}", info.elementary_pid, idx);
-            }
-        }
-        Ok(())
-    }
-
-    fn get_stream_index(&self, pid: u16) -> Option<usize> {
-        self.pids_to_stream_indices
-            .iter()
-            .find(|(p, _)| *p == pid)
-            .map(|(_, idx)| *idx)
+    /// Reads a complete TS packet.
+    async fn read_packet_data(&mut self) -> Result<Vec<u8>> {
+        let mut packet = vec![0u8; TS_PACKET_SIZE];
+        self.reader.read_exact(&mut packet).await?;
+        Ok(packet)
     }
 }
 
-#[async_trait]
-impl<R: AsyncRead + Unpin + Send> format::Demuxer for TSDemuxer<R> {
+#[async_trait::async_trait]
+impl<R: AsyncRead + Unpin + Send> FormatDemuxer for TSDemuxer<R> {
     async fn read_packet(&mut self) -> Result<Packet> {
         loop {
-            if let Some(packet) = self.read_ts_packet().await? {
-                return Ok(packet);
+            let data = self.read_packet_data().await?;
+            let header = self.parser.parse_header(&data)?;
+
+            // Skip packets with transport errors
+            if header.transport_error {
+                continue;
+            }
+
+            // Parse adaptation field if present
+            let mut payload_offset = TS_HEADER_SIZE;
+            if header.adaptation_field_exists {
+                if let Some(adaptation) = self.parser.parse_adaptation_field(&data, payload_offset)? {
+                    payload_offset += adaptation.length + 1;
+                }
+            }
+
+            // Handle payload
+            if header.contains_payload {
+                match header.pid {
+                    PID_PAT if header.payload_unit_start => {
+                        // Parse PAT to get PMT PID
+                        let table_offset = payload_offset + data[payload_offset] as usize + 1;
+                        let pat = self.parser.parse_pat(&data[table_offset..], 0, 0)?;
+                        
+                        // Use first program's PMT
+                        if let Some(entry) = pat.entries.first() {
+                            self.pmt_pid = Some(entry.program_map_pid);
+                        }
+                    }
+
+                    pmt_pid if Some(pmt_pid) == self.pmt_pid && header.payload_unit_start => {
+                        // Parse PMT to get elementary stream info
+                        let table_offset = payload_offset + data[payload_offset] as usize + 1;
+                        let pmt = self.parser.parse_pmt(&data[table_offset..], 0, 0)?;
+                        
+                        // Create stream entries
+                        for (i, info) in pmt.elementary_stream_infos.iter().enumerate() {
+                            let codec_type = match info.stream_type {
+                                STREAM_TYPE_H264 => CodecType::H264,
+                                STREAM_TYPE_H265 => CodecType::H265,
+                                STREAM_TYPE_AAC => CodecType::AAC,
+                                _ => continue,
+                            };
+
+                            let stream = StreamInfo {
+                                stream_index: i,
+                                config: Some(StreamCodecData {
+                                    codec_type,
+                                    width: None,
+                                    height: None,
+                                    extra_data: None,
+                                }),
+                                pes_buffer: None,
+                            };
+                            self.streams.insert(info.elementary_pid, stream);
+                        }
+                        self.pmt = Some(pmt);
+                    }
+
+                    elementary_pid if self.streams.contains_key(&elementary_pid) => {
+                        let stream = self.streams.get_mut(&elementary_pid).unwrap();
+                        let payload = &data[payload_offset..];
+
+                        // Start new PES packet or add to existing
+                        if header.payload_unit_start {
+                            // Handle completed PES packet
+                            if let Some(pes) = &mut stream.pes_buffer {
+                                if !pes.data.is_empty() {
+                                    let packet_data = pes.take_data();
+                                    return Ok(Packet::new(Bytes::from(packet_data))
+                                        .with_pts(pes.pts.unwrap_or(0))
+                                        .with_stream_index(stream.stream_index));
+                                }
+                            }
+
+                            // Parse PES header
+                            if payload.len() >= 6 {
+                                let packet_len = ((payload[4] as usize) << 8) | (payload[5] as usize);
+                                let pts = parse_pts(payload);
+
+                                // Create new PES packet
+                                let mut pes = PESBuilder::new();
+                                if let Some(pts) = pts {
+                                    // Convert from 90kHz to ns
+                                    pes.set_pts((pts as f64 * 1_000_000_000.0 / 90_000.0) as i64);
+                                }
+                                pes.set_size(packet_len);
+                                stream.pes_buffer = Some(pes);
+                            }
+                        }
+
+                        // Add payload to PES packet
+                        if let Some(pes) = &mut stream.pes_buffer {
+                            pes.push_data(payload);
+
+                            // Return completed packets
+                            if pes.is_complete() {
+                                let packet_data = pes.take_data();
+                                return Ok(Packet::new(Bytes::from(packet_data))
+                                    .with_pts(pes.pts.unwrap_or(0))
+                                    .with_stream_index(stream.stream_index));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
 
-    async fn streams(&mut self) -> Result<Vec<Box<dyn av::CodecData>>> {
-        // Keep reading packets until we have both PAT and PMT
-        while self.pat.is_none() || self.pmt.is_none() {
-            if self.read_ts_packet().await?.is_none() {
-                break;
+    async fn streams(&mut self) -> Result<Vec<Box<dyn av::CodecDataExt>>> {
+        // Read packets until we have stream information
+        while self.pmt.is_none() {
+            let data = self.read_packet_data().await?;
+            let header = self.parser.parse_header(&data)?;
+
+            // Skip packets with transport errors
+            if header.transport_error {
+                continue;
+            }
+
+            // Parse adaptation field if present
+            let mut payload_offset = TS_HEADER_SIZE;
+            if header.adaptation_field_exists {
+                if let Some(adaptation) = self.parser.parse_adaptation_field(&data, payload_offset)? {
+                    payload_offset += adaptation.length + 1;
+                }
+            }
+
+            // Handle payload
+            if header.contains_payload {
+                match header.pid {
+                    PID_PAT if header.payload_unit_start => {
+                        // Parse PAT to get PMT PID
+                        let table_offset = payload_offset + data[payload_offset] as usize + 1;
+                        let pat = self.parser.parse_pat(&data[table_offset..], 0, 0)?;
+                        
+                        // Use first program's PMT
+                        if let Some(entry) = pat.entries.first() {
+                            self.pmt_pid = Some(entry.program_map_pid);
+                        }
+                    }
+
+                    pmt_pid if Some(pmt_pid) == self.pmt_pid && header.payload_unit_start => {
+                        // Parse PMT to get elementary stream info
+                        let table_offset = payload_offset + data[payload_offset] as usize + 1;
+                        let pmt = self.parser.parse_pmt(&data[table_offset..], 0, 0)?;
+                        
+                        // Create stream entries
+                        for (i, info) in pmt.elementary_stream_infos.iter().enumerate() {
+                            let codec_type = match info.stream_type {
+                                STREAM_TYPE_H264 => CodecType::H264,
+                                STREAM_TYPE_H265 => CodecType::H265,
+                                STREAM_TYPE_AAC => CodecType::AAC,
+                                _ => continue,
+                            };
+
+                            let stream = StreamInfo {
+                                stream_index: i,
+                                config: Some(StreamCodecData {
+                                    codec_type,
+                                    width: None,
+                                    height: None,
+                                    extra_data: None,
+                                }),
+                                pes_buffer: None,
+                            };
+                            self.streams.insert(info.elementary_pid, stream);
+                        }
+                        self.pmt = Some(pmt);
+                        break;
+                    }
+                    _ => {}
+                }
             }
         }
 
-        // Setup streams if we haven't yet
-        if self.streams.is_empty() && self.pmt.is_some() {
-            self.setup_streams()?;
+        // Return stream configurations
+        let mut configs = Vec::new();
+        for stream in self.streams.values() {
+            if let Some(config) = &stream.config {
+                // Create a Box<dyn CodecDataExt> directly
+                let ext_config: Box<dyn av::CodecDataExt> = Box::new(config.clone());
+                configs.push(ext_config);
+            }
         }
+        Ok(configs)
+    }
+}
 
-        if self.streams.is_empty() {
-            println!("No streams found in TS file");
-            println!("PAT entries: {}", self.pat.as_ref().map_or(0, |pat| pat.entries.len()));
-            println!("PMT streams: {}", self.pmt.as_ref().map_or(0, |pmt| pmt.elementary_stream_infos.len()));
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use tokio::runtime::Runtime;
 
-        Ok(self
-            .streams
-            .iter()
-            .map(|s| {
-                let codec = TSCodecData {
-                    codec_type: s.codec_type,
-                    width: s.width,
-                    height: s.height,
-                    extra_data: s.extra_data.clone(),
-                };
-                Box::new(codec) as Box<dyn av::CodecData>
-            })
-            .collect())
+    fn create_pat_packet() -> Vec<u8> {
+        let mut pat_packet = vec![0u8; TS_PACKET_SIZE];
+        pat_packet[0] = 0x47; // Sync byte
+        pat_packet[1] = 0x40; // Payload start indicator + no transport error
+        pat_packet[2] = 0x00; // PID 0 (PAT)
+        pat_packet[3] = 0x10; // No adaptation field
+        pat_packet[4] = 0x00; // Pointer field
+        pat_packet[5] = 0x00; // Table ID (PAT)
+        
+        // Section length (13 bytes)
+        let section_length = 13;
+        pat_packet[6] = 0xB0; // Section syntax indicator + length MSB
+        pat_packet[7] = section_length as u8;
+
+        pat_packet[8] = 0x00; // Transport stream ID high
+        pat_packet[9] = 0x01; // Transport stream ID low
+        pat_packet[10] = 0xC1; // Version (0) + current/next (1)
+        pat_packet[11] = 0x00; // Section number
+        pat_packet[12] = 0x00; // Last section number
+
+        // Program entry (5 bytes)
+        pat_packet[13] = 0x00; // Program number high
+        pat_packet[14] = 0x01; // Program number low
+        pat_packet[15] = 0xE0; // Reserved + PMT PID high (0x1000)
+        pat_packet[16] = 0x20; // PMT PID low
+
+        // Calculate and add CRC
+        let mut crc = Crc32Mpeg2::new();
+        let crc_val = crc.calculate(&pat_packet[5..17]);
+        pat_packet[17] = (crc_val >> 24) as u8;
+        pat_packet[18] = (crc_val >> 16) as u8;
+        pat_packet[19] = (crc_val >> 8) as u8;
+        pat_packet[20] = crc_val as u8;
+
+        // Fill rest with stuffing bytes
+        pat_packet[21..].fill(0xFF);
+        pat_packet
+    }
+
+    fn create_pmt_packet() -> Vec<u8> {
+        let mut pmt_packet = vec![0u8; TS_PACKET_SIZE];
+        pmt_packet[0] = 0x47; // Sync byte
+        pmt_packet[1] = 0x40; // Payload start + no error
+        pmt_packet[2] = 0x20; // PID 0x1000 (PMT)
+        pmt_packet[3] = 0x10; // No adaptation field
+        pmt_packet[4] = 0x00; // Pointer field
+        pmt_packet[5] = 0x02; // Table ID (PMT)
+
+        // Section length (18 bytes = 13 base + 5 for one stream entry)
+        let section_length = 18;
+        pmt_packet[6] = 0xB0; // Section syntax + length MSB
+        pmt_packet[7] = section_length as u8;
+
+        pmt_packet[8] = 0x00; // Program number high
+        pmt_packet[9] = 0x01; // Program number low
+        pmt_packet[10] = 0xC1; // Version (0) + current
+
+        pmt_packet[11] = 0x00; // Section number
+        pmt_packet[12] = 0x00; // Last section number
+
+        // PCR PID
+        pmt_packet[13] = 0xE0; // Reserved + PCR PID high
+        pmt_packet[14] = 0x21; // PCR PID low = 0x1001
+
+        // Program info length (0)
+        pmt_packet[15] = 0xF0; // Reserved + length high
+        pmt_packet[16] = 0x00; // Length low
+
+        // Stream entry
+        pmt_packet[17] = STREAM_TYPE_H264; // Stream type
+        pmt_packet[18] = 0xE0; // Reserved + elementary PID high
+        pmt_packet[19] = 0x21; // Elementary PID low = 0x1001
+        pmt_packet[20] = 0xF0; // Reserved + ES info length high
+        pmt_packet[21] = 0x00; // ES info length low
+
+        // Calculate and add CRC
+        let mut crc = Crc32Mpeg2::new();
+        let crc_val = crc.calculate(&pmt_packet[5..22]);
+        pmt_packet[22] = (crc_val >> 24) as u8;
+        pmt_packet[23] = (crc_val >> 16) as u8;
+        pmt_packet[24] = (crc_val >> 8) as u8;
+        pmt_packet[25] = crc_val as u8;
+
+        // Fill rest with stuffing bytes
+        pmt_packet[26..].fill(0xFF);
+        pmt_packet
+    }
+
+    #[test]
+    fn test_ts_demuxer_basic() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create test data with PAT and PMT
+            let mut data = Vec::new();
+
+            // Add PAT and PMT packets
+            data.extend_from_slice(&create_pat_packet());
+            data.extend_from_slice(&create_pmt_packet());
+
+            // Create cursor with test data
+            let mut demuxer = TSDemuxer::new(Cursor::new(data));
+            let streams = demuxer.streams().await.unwrap();
+            assert_eq!(streams.len(), 1);
+            assert_eq!(streams[0].codec_type(), CodecType::H264);
+        });
     }
 }

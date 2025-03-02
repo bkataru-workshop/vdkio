@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use tokio::fs::File as AsyncFile;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, BufWriter};
-use vdkio::av::{CodecData, CodecType, Packet};
+use vdkio::av::{CodecData, CodecDataExt, CodecType, Packet};
 use vdkio::format::ts::{TSDemuxer, TSMuxer};
 use vdkio::format::{Demuxer, Muxer};
 
@@ -28,6 +28,8 @@ impl CodecData for DummyCodecData {
     }
 }
 
+// DummyCodecData implements Clone + CodecData, so it gets CodecDataExt through blanket impl
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_path = "./test_output/output.ts";
@@ -42,14 +44,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let writer = BufWriter::with_capacity(8192, output_file); // Use larger buffer
     let mut muxer = Box::new(TSMuxer::new(writer)) as Box<dyn Muxer>;
 
-    // Define streams
-    let streams = vec![
+    // Define streams with explicit type annotation
+    let streams: Vec<Box<dyn CodecDataExt>> = vec![
         Box::new(DummyCodecData {
             codec_type: CodecType::H264,
-        }) as Box<dyn CodecData>,
+        }),
         Box::new(DummyCodecData {
             codec_type: CodecType::AAC,
-        }) as Box<dyn CodecData>,
+        }),
     ];
 
     // Write header and initialize streams

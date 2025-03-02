@@ -4,6 +4,11 @@ use crate::av::CodecType;
 use crate::error::{Result, VdkError};
 use async_trait::async_trait;
 
+/// H.264/AVC video decoder implementation
+///
+/// Currently provides a basic pass-through implementation that extracts
+/// SPS/PPS information and identifies frame types. Future versions will
+/// include full H.264 decoding to raw YUV frames.
 #[allow(dead_code)]
 pub struct H264Decoder {
     width: u32,
@@ -14,6 +19,16 @@ pub struct H264Decoder {
 }
 
 impl H264Decoder {
+    /// Creates a new H.264 decoder for the specified resolution
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Width of the video frames to decode
+    /// * `height` - Height of the video frames to decode
+    ///
+    /// # Returns
+    ///
+    /// A new H264Decoder instance configured for the given resolution
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -63,6 +78,11 @@ impl VideoDecoder for H264Decoder {
     }
 }
 
+/// H.264/AVC video encoder implementation
+///
+/// Currently provides a pass-through implementation that preserves
+/// existing H.264 encoded data and adds SPS/PPS information for key frames.
+/// Future versions will include full H.264 encoding from raw YUV frames.
 #[allow(dead_code)]
 pub struct H264Encoder {
     width: u32,
@@ -73,6 +93,18 @@ pub struct H264Encoder {
 }
 
 impl H264Encoder {
+    /// Creates a new H.264 encoder with specified parameters
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Width of the output video frames
+    /// * `height` - Height of the output video frames
+    /// * `bitrate` - Target bitrate in bits per second
+    /// * `fps` - Target frames per second
+    ///
+    /// # Returns
+    ///
+    /// A new H264Encoder instance configured with the given parameters
     pub fn new(width: u32, height: u32, bitrate: u32, fps: u32) -> Self {
         Self {
             width,
@@ -86,6 +118,10 @@ impl H264Encoder {
 
 #[async_trait]
 impl VideoEncoder for H264Encoder {
+    /// Returns codec configuration data for the encoder
+    ///
+    /// Provides information about the codec type, resolution, and any
+    /// extra data (like SPS/PPS) needed for decoding the stream.
     fn codec_data(&self) -> StreamCodecData {
         StreamCodecData {
             codec_type: CodecType::H264,
@@ -95,6 +131,10 @@ impl VideoEncoder for H264Encoder {
         }
     }
 
+    /// Encodes a video frame into H.264 format
+    ///
+    /// Currently implements a pass-through that preserves existing H.264 data
+    /// and adds necessary headers for keyframes.
     async fn encode(&mut self, frame: VideoFrame) -> Result<Vec<Vec<u8>>> {
         // TODO: Implement actual H.264 encoding
         // For now, just pass through the data with proper NAL framing
@@ -120,6 +160,21 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
+/// Creates a function that constructs H.264 encoder/decoder pairs for transcoding
+///
+/// This factory function returns a closure that can create encoder/decoder pairs
+/// configured for transcoding H.264 video to a specific output resolution and bitrate.
+///
+/// # Arguments
+///
+/// * `width` - Target output width in pixels
+/// * `height` - Target output height in pixels
+/// * `bitrate` - Target output bitrate in bits per second
+/// * `fps` - Target output frame rate
+///
+/// # Returns
+///
+/// A boxed closure that takes codec configuration and returns an encoder/decoder pair
 pub fn create_transcoder_for_resolution(
     width: u32,
     height: u32,
